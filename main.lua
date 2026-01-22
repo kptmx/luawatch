@@ -105,6 +105,8 @@ end
 function draw_watch()
     local t = hw.getTime()
     ui.text(60, 150, string.format("%02d:%02d", t.h, t.m), 10, COLOR.ACCENT)
+    local freeMem = hw.getFreeMem() / 1024
+    ui.text(20, 100, "Free PSRAM: " .. math.floor(freeMem) .. " KB", 1, 0xFFFF)
     
     -- Мини-виджеты
     ui.text(130, 260, "BATT: " .. hw.getBatt() .. "%", 2, COLOR.GRAY)
