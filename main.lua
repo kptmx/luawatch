@@ -1,6 +1,6 @@
 -- Настройки репозитория
-local user = "YOUR_GITHUB_USER"
-local repo = "YOUR_REPO_NAME"
+local user = "kptmx"
+local repo = "luawatch-system"
 local branch = "main"
 
 local SW, SH = 410, 502
