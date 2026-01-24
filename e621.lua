@@ -3,7 +3,7 @@ local SCR_W, SCR_H = 410, 502
 local state = "menu"            -- menu, loading, view
 local rating = nil              -- nil = any, "s", "q", "e"
 local image_path = "/current.jpg"   -- file on SD card (root)
-local sd_path = "" .. image_path
+local sd_path = "/sdcard" .. image_path
 
 local function load_random_post()
     state = "loading"
