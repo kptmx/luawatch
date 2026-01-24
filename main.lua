@@ -169,4 +169,3 @@ function draw()
     end
     if ui.button(300, 465, 90, 32, "REBOOT", 0x4208) then hw.reboot() end
 end
-end
