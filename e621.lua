@@ -260,7 +260,7 @@ function loadCurrentImage()
     addLog("Loading: " .. imageUrl:sub(1, 50) .. "...")
     
     -- Проверяем кэш
-    if fs.exists(app.currentPost.cacheKey) then
+    if sd.exists(app.currentPost.cacheKey) then
         addLog("Image in cache")
         return true
     end
@@ -452,9 +452,9 @@ function drawPost()
     drawRating(post.rating, areaX + areaW - 40, areaY + 10)
     
     -- Загружаем и отображаем изображение если есть
-    if fs.exists(post.cacheKey) then
+    if sd.exists(post.cacheKey) then
         addLog("Drawing image...")
-        local success = ui.drawJPEG(areaX + 10, areaY + 90, post.cacheKey)
+        local success = ui.drawJPEG_SD(areaX + 10, areaY + 90, post.cacheKey)
         if not success then
             ui.text(areaX + 10, areaY + 90, "Image loaded", 1, COLORS.text)
             ui.text(areaX + 10, areaY + 110, "but display failed", 1, COLORS.text)
