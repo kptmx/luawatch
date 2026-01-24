@@ -1,114 +1,109 @@
--- Конфигурация
 local SCR_W, SCR_H = 410, 502
-local API_URL = "https://e621.net/posts.json?limit=10&tags=rating:s"
-local img_path = "/e621_tmp.jpg"
 
--- Состояние
-local posts = {}
-local current_view = "list"
-local selected_idx = 1
-local is_loading = false
-local scroll_y = 0
-local status_msg = "Готов"
+local state = "menu"            -- menu, loading, view
+local rating = nil              -- nil = any, "s", "q", "e"
+local image_path = "/current.jpg"   -- file on SD card (root)
+local sd_path = "" .. image_path
 
---- ### Самодельный парсер JSON
--- Ищет ID и URL образца (sample) в ответе API
-function parseE621(json)
-    local result = {}
-    -- Находим массив "posts": [ ... ]
-    local posts_content = string.match(json, '"posts":%s*%[(.*)%]%s*%}')
-    if not posts_content then return result end
-
-    -- Разбиваем на отдельные объекты постов (между { })
-    for post_block in string.gmatch(posts_content, "{(.-)}") do
-        local id = string.match(post_block, '"id":%s*(%d+)')
-        -- Ищем URL в секции "sample" или "file". 
-        -- Берем первый попавшийся подходящий URL в блоке поста.
-        local url = string.match(post_block, '"url":%s*"(https://static1.e621.net/data/sample/.-%.jpg)"')
-        
-        if id and url then
-            table.insert(result, {id = id, url = url})
-        end
-    end
-    return result
-end
-
-function fetchPosts()
-    is_loading = true
-    status_msg = "Запрос к API..."
-    local response = net.get(API_URL)
+local function load_random_post()
+    state = "loading"
     
-    if response.ok and response.body then
-        posts = parseE621(response.body)
-        status_msg = "Найдено: " .. #posts
-    else
-        status_msg = "Ошибка сети: " .. (response.err or response.code)
+    -- Unload previous image from cache to free PSRAM
+    ui.unload(image_path)
+
+    local tags = "order:random"
+    if rating then
+        tags = tags .. " rating:" .. rating
     end
-    is_loading = false
-end
 
-function viewPost(idx)
-    local post = posts[idx]
-    if not post then return end
-    
-    is_loading = true
-    status_msg = "Качаю картинку..."
-    if net.download(post.url, img_path) then
-        ui.unload(img_path) 
-        current_view = "viewer"
-    else
-        status_msg = "Ошибка загрузки"
-    end
-    is_loading = false
-end
+    local api_url = "https://e621.net/posts.json?limit=1&tags=" .. tags
 
--- Инициализация
-fetchPosts()
-
-function draw()
-    ui.rect(0, 0, SCR_W, SCR_H, 0x0000)
-
-    if is_loading then
-        ui.text(20, 240, status_msg, 2, 0x07E0)
+    local res = net.get(api_url)
+    if not (res.ok and res.code == 200) then
+        state = "menu"
         return
     end
 
-    if current_view == "list" then
-        drawList()
+    local body = res.body
+
+    -- Prioritize sample_url (always JPEG, scaled down)
+    local sample_url = string.match(body, '"sample_url":"(//[^"]+)"')
+    local preview_url = string.match(body, '"preview_url":"(//[^"]+)"')
+
+    local chosen_url = nil
+    if sample_url then
+        chosen_url = "https:" .. sample_url
+    elseif preview_url then
+        chosen_url = "https:" .. preview_url
+    end
+
+    if not chosen_url then
+        state = "menu"
+        return
+    end
+
+    -- Download to SD card
+    local ok = net.download(chosen_url, sd_path)
+    if ok then
+        state = "view"
     else
-        drawViewer()
+        state = "menu"
     end
 end
 
-function drawList()
-    ui.text(10, 10, "e621: Последнее (S)", 2, 0x52AA) -- Цвет e621
-    
-    -- Список
-    local item_h = 70
-    scroll_y = ui.beginList(0, 50, SCR_W, 380, scroll_y, #posts * item_h)
-    
-    for i, post in ipairs(posts) do
-        local y = (i - 1) * item_h
-        if ui.button(10, y + 5, 390, 60, "Post #" .. post.id, 0x4208) then
-            selected_idx = i
-            viewPost(i)
+function draw()
+    ui.rect(0, 0, SCR_W, SCR_H, 0)  -- black background
+
+    if state == "menu" then
+        ui.text(20, 40, "e621 Random Viewer", 3, 0xFFFF)
+        ui.text(20, 100, "Warning: May contain NSFW content", 2, 0xF800)
+
+        ui.text(20, 160, "Select rating:", 2, 0xFFFF)
+
+        local btn_w = 90
+        local spacing = 15
+        local start_x = 35
+
+        -- Any
+        local color_any = (rating == nil) and 0x07E0 or 0x4444
+        if ui.button(start_x, 220, btn_w, 60, "Any", color_any) then rating = nil end
+
+        -- Safe
+        local color_s = (rating == "s") and 0x07E0 or 0x4444
+        if ui.button(start_x + btn_w + spacing, 220, btn_w, 60, "Safe", color_s) then rating = "s" end
+
+        -- Questionable
+        local color_q = (rating == "q") and 0x07E0 or 0x4444
+        if ui.button(start_x + 2*(btn_w + spacing), 220, btn_w, 60, "Quest.", color_q) then rating = "q" end
+
+        -- Explicit
+        local color_e = (rating == "e") and 0x07E0 or 0x4444
+        if ui.button(start_x + 3*(btn_w + spacing), 220, btn_w, 60, "Expl.", color_e) then rating = "e" end
+
+        -- Load button
+        if ui.button(105, 320, 200, 80, "Get Random", 0x07E0) then
+            load_random_post()
         end
-    end
-    ui.endList()
 
-    -- Нижняя панель
-    ui.rect(0, 440, SCR_W, 62, 0x18C3)
-    ui.text(20, 455, status_msg, 2, 0xFFFF)
-    if ui.button(300, 445, 100, 50, "Обн.", 0x07E0) then
-        fetchPosts()
-    end
-end
+    elseif state == "loading" then
+        ui.text(80, 200, "Loading...", 3, 0xFFFF)
+        ui.text(80, 260, "This may take a while", 2, 0xAAAA)
 
-function drawViewer()
-    ui.drawJPEG_SD(0, 0, img_path)
-    
-    -- Кнопка назад поверх картинки
-    if ui.button(10, 10, 80, 50, "<", 0x0000) then
-        current_view = "list"
+    elseif state == "view" then
+        -- Display the downloaded sample/preview JPEG
+        local drawn = ui.drawJPEG_SD(0, 0, image_path)
+
+        if not drawn then
+            ui.text(50, 200, "Failed to display image", 3, 0xF800)
+        end
+
+        -- Controls
+        if ui.button(10, SCR_H - 90, 180, 80, "Back", 0xF800) then
+            state = "menu"
+        end
+
+        if ui.button(SCR_W - 190, SCR_H - 90, 180, 80, "Next", 0x07E0) then
+            load_random_post()
+        end
     end
 end
