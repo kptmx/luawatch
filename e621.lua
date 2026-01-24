@@ -132,7 +132,7 @@ function draw()
         ui.input(10, 40, SCR_W - 300, 30, "Tags: " .. tags, true)
 
         -- Кнопка поиска
-        if ui.button(SCR_W - 100, 40, 90, 30, "Search", 0x07E0) and not downloading then
+        if ui.button(SCR_W - 100, 80, 90, 30, "Search", 0x07E0) and not downloading then
             search_and_download()
         end
 
