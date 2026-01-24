@@ -100,7 +100,7 @@ function parseSimpleE621(jsonStr)
     post.file_url = urlMatch or ""
     if post.file_url == "" then
         -- Пробуем найти в секции file
-        local fileSection = jsonStr:match('"file"%s*:%s*{([^}]+)}')
+        local fileSection = jsonStr:match('"sample"%s*:%s*{([^}]+)}')
         if fileSection then
             urlMatch = fileSection:match('"url"%s*:%s*"([^"]+)"')
             post.file_url = urlMatch or ""
@@ -182,6 +182,7 @@ function fetchPost(tags)
             elseif settings.rating == "explicit" then 
                 showPost = true
             end
+            showPost = true
             
             if not showPost then
                 app.lastError = "Rating filtered: " .. postData.rating
