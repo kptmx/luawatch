@@ -129,7 +129,7 @@ function draw()
         ui.text(100, 10, "e621 Client (1 post)", 2, 0xFFFF)
 
         -- Поле ввода тегов (для простоты — клик для фокуса, но без редактирования)
-        ui.input(100, 40, SCR_W - 120, 30, "Tags: " .. tags, true)
+        ui.input(100, 40, SCR_W - 300, 30, "Tags: " .. tags, true)
 
         -- Кнопка поиска
         if ui.button(SCR_W - 100, 40, 90, 30, "Search", 0x07E0) and not downloading then
