@@ -4,14 +4,37 @@ local repo = "luawatch-system"
 local branch = "main"
 
 local SW, SH = 410, 502
-local mode = "LOCAL" -- LOCAL, STORE, или WIFI
+local mode = "LOCAL" 
 local scroll = 0
 local msg = "Ready"
+local wifi_cfg_path = "/wifi.dat" -- Файл для хранения данных сети
 
 -- Состояние WiFi
 local ssid, pass = "", ""
 local target = "ssid"
 local last_key, last_time, char_idx = "", 0, 0
+
+--- ### НОВОЕ: Логика автоподключения ---
+function save_wifi()
+    -- Сохраняем SSID и пароль через перевод строки
+    fs.save(wifi_cfg_path, ssid .. "\n" .. pass)
+end
+
+function load_and_connect_wifi()
+    if fs.exists(wifi_cfg_path) then
+        local data = fs.load(wifi_cfg_path)
+        if data then
+            -- Разделяем строку по символу переноса
+            local s, p = data:match("([^\n]*)\n([^\n]*)")
+            if s and s ~= "" then
+                ssid, pass = s, p
+                net.connect(ssid, pass)
+                msg = "Auto-connecting..."
+            end
+        end
+    end
+end
+-----------------------------------------
 
 local local_files = {}
 local store_files = {}
@@ -72,7 +95,9 @@ function refresh_store()
     else msg = "Catalog error: " .. (res.code or "off") end
 end
 
+-- Инициализация при старте
 scan_local()
+load_and_connect_wifi() -- Пробуем подключиться автоматически
 
 function draw()
     ui.rect(0, 0, SW, SH, 0)
@@ -111,9 +136,11 @@ function draw()
         if ui.input(20, 140, 370, 45, "SSID: "..ssid, target == "ssid") then target = "ssid" end
         if ui.input(20, 190, 370, 45, "PASS: "..pass, target == "pass") then target = "pass" end
         
+        -- Кнопка CONNECT (теперь с сохранением)
         if ui.button(20, 245, 180, 45, "CONNECT", 0x07E0) then
+            save_wifi() -- СОХРАНЯЕМ ПЕРЕД ПОДКЛЮЧЕНИЕМ
             net.connect(ssid, pass)
-            msg = "Connecting..."
+            msg = "Connecting & Saving..."
         end
         
         -- Клавиатура
