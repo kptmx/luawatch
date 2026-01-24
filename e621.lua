@@ -97,8 +97,8 @@ function draw_viewer()
     if post_path then
         ui.drawJPEG_SD(0, 0, post_path)  -- Полный размер, клиппинг экрана
     end
-    ui.text(10, 10, "e621 Viewer", 2, 0xFFFF)
-    ui.text(10, SCR_H - 40, statusMsg, 1, 0xFFFF)
+    ui.text(100, 10, "e621 Viewer", 2, 0xFFFF)
+    ui.text(100, SCR_H - 40, statusMsg, 1, 0xFFFF)
 
     -- Прогресс-бар, если скачиваем
     if downloading then
@@ -113,7 +113,7 @@ function draw_viewer()
 
     -- Отладка ошибок (маленький текст внизу)
     if errorLog ~= "" then
-        ui.text(10, SCR_H - 20, errorLog:sub(-80), 1, 0xF800)  -- Последние 80 символов красным
+        ui.text(100, SCR_H - 20, errorLog:sub(-80), 1, 0xF800)  -- Последние 80 символов красным
     end
 end
 
@@ -126,17 +126,17 @@ function draw()
         draw_viewer()
     else
         -- Иначе — поиск
-        ui.text(10, 10, "e621 Client (1 post)", 2, 0xFFFF)
+        ui.text(100, 10, "e621 Client (1 post)", 2, 0xFFFF)
 
         -- Поле ввода тегов (для простоты — клик для фокуса, но без редактирования)
-        ui.input(10, 40, SCR_W - 120, 30, "Tags: " .. tags, true)
+        ui.input(100, 40, SCR_W - 120, 30, "Tags: " .. tags, true)
 
         -- Кнопка поиска
         if ui.button(SCR_W - 100, 40, 90, 30, "Search", 0x07E0) and not downloading then
             search_and_download()
         end
 
-        ui.text(10, 80, statusMsg, 1, 0xFFFF)
+        ui.text(100, 80, statusMsg, 1, 0xFFFF)
 
         -- Прогресс-бар
         if downloading then
@@ -145,8 +145,8 @@ function draw()
 
         -- Отладка
         if errorLog ~= "" then
-            ui.text(10, 160, "Errors:", 1, 0xF800)
-            ui.text(10, 180, errorLog:sub(-120), 1, 0xF800)  -- Последние 120 символов
+            ui.text(100, 160, "Errors:", 1, 0xF800)
+            ui.text(100, 180, errorLog:sub(-120), 1, 0xF800)  -- Последние 120 символов
         end
     end
 
