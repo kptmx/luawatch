@@ -100,7 +100,7 @@ function parseSimpleE621(jsonStr)
     post.file_url = urlMatch or ""
     if post.file_url == "" then
         -- Пробуем найти в секции file
-        local fileSection = jsonStr:match('"sample"%s*:%s*{([^}]+)}')
+        local fileSection = jsonStr:match('"file"%s*:%s*{([^}]+)}')
         if fileSection then
             urlMatch = fileSection:match('"url"%s*:%s*"([^"]+)"')
             post.file_url = urlMatch or ""
@@ -249,7 +249,7 @@ function loadCurrentImage()
     end
     
     -- Выбираем URL для загрузки
-    local imageUrl = app.currentPost.sample or app.currentPost.preview or app.currentPost.url
+    local imageUrl = app.currentPost.url or app.currentPost.sample or app.currentPost.preview
     
     if not imageUrl or imageUrl == "" then
         app.lastError = "No image URL available"
@@ -271,9 +271,15 @@ function loadCurrentImage()
     app.downloadProgress = 0
     app.downloadTotal = 0
     
-    -- Простая загрузка без коллбэка для теста
-    local success = net.download(imageUrl, app.currentPost.cacheKey)
-    
+    local success = net.download(
+        imageUrl, 
+        app.currentPost.cacheKey,
+        function(loaded, total)
+            app.downloadProgress = loaded
+            app.downloadTotal = total
+            addLog("DL: " .. loaded .. "/" .. total)
+        end
+    )    
     if success then
         addLog("Download OK")
         return true
@@ -472,7 +478,7 @@ function drawControls()
     local spacing = 5
     
     -- Кнопка загрузки
-    if ui.button(SAFE_MARGIN, y, btnW, 40, "LOAD", COLORS.button) then
+    if ui.button(SAFE_MARGIN, y, btnW, 60, "LOAD", COLORS.button) then
         loadCurrentImage()
     end
     
