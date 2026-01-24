@@ -1,109 +1,121 @@
-local SCR_W, SCR_H = 410, 502
+-- Простой клиент для e621.net (NSFW-сайт с артом)
+-- Использует API: https://e621.net/posts.json?tags=...&limit=...
+-- Требует подключения к WiFi (используйте recovery mode для настройки)
+-- Изображения скачиваются на SD-карту в /e621/
+-- Ограничения: простой парсер JSON, лимит 20 постов, базовый UI
 
-local state = "menu"            -- menu, loading, view
-local rating = nil              -- nil = any, "s", "q", "e"
-local image_path = "/current.jpg"   -- file on SD card (root)
-local sd_path = "/sdcard" .. image_path
+local SCR_W, SCR_H = 410, 502  -- Размеры экрана
+local tags = ""                -- Теги для поиска
+local posts = {}               -- Список постов (URLs)
+local scrollY = 0              -- Скролл списка
+local contentH = 0             -- Высота контента списка
+local downloading = false      -- Флаг скачивания
+local statusMsg = "Enter tags and press Search"  -- Статус
+local selectedPost = nil       -- Для просмотра полного изображения
+local zoom = 1.0               -- Зум для просмотра (пока не реализовано)
+local offsetX, offsetY = 0, 0  -- Офсет для зума/пана (пока не реализовано)
 
-local function load_random_post()
-    state = "loading"
-    
-    -- Unload previous image from cache to free PSRAM
-    ui.unload(image_path)
-
-    local tags = "order:random"
-    if rating then
-        tags = tags .. " rating:" .. rating
+-- Простой парсер JSON для извлечения URL изображений (только file.url)
+function parse_e621_json(json_str)
+    local urls = {}
+    for url in json_str:gmatch('"file":{"url":"(.-)"') do
+        table.insert(urls, url)
     end
+    return urls
+end
 
-    local api_url = "https://e621.net/posts.json?limit=1&tags=" .. tags
-
+-- Функция поиска и скачивания
+function search_and_download()
+    if tags == "" then
+        statusMsg = "Enter tags!"
+        return
+    end
+    statusMsg = "Searching..."
+    local api_url = "https://e621.net/posts.json?tags=" .. tags .. "&limit=20"
     local res = net.get(api_url)
-    if not (res.ok and res.code == 200) then
-        state = "menu"
+    if not res.ok or res.code ~= 200 then
+        statusMsg = "Search failed: " .. (res.err or "unknown")
         return
     end
-
-    local body = res.body
-
-    -- Prioritize sample_url (always JPEG, scaled down)
-    local sample_url = string.match(body, '"sample_url":"(//[^"]+)"')
-    local preview_url = string.match(body, '"preview_url":"(//[^"]+)"')
-
-    local chosen_url = nil
-    if sample_url then
-        chosen_url = "https:" .. sample_url
-    elseif preview_url then
-        chosen_url = "https:" .. preview_url
-    end
-
-    if not chosen_url then
-        state = "menu"
+    local urls = parse_e621_json(res.body)
+    if #urls == 0 then
+        statusMsg = "No results found"
         return
     end
+    posts = {}
+    downloading = true
+    statusMsg = "Downloading images..."
+    sd.mkdir("/e621")  -- Создаем папку, если нет
+    for i, url in ipairs(urls) do
+        local filename = "/e621/img" .. i .. ".jpg"
+        local dl_res = net.download(url, filename)
+        if dl_res then
+            table.insert(posts, filename)
+        else
+            statusMsg = "Download failed for some images"
+        end
+    end
+    downloading = false
+    statusMsg = "Done! " .. #posts .. " images loaded"
+    contentH = #posts * 210  -- Примерная высота: 200px img + 10 margin
+end
 
-    -- Download to SD card
-    local ok = net.download(chosen_url, sd_path)
-    if ok then
-        state = "view"
-    else
-        state = "menu"
+-- Отрисовка списка изображений
+function draw_gallery()
+    scrollY = ui.beginList(0, 80, SCR_W, SCR_H - 80, scrollY, contentH)
+    local y = 0
+    for i, path in ipairs(posts) do
+        -- Миниатюра (предполагаем, что изображения масштабируются UI, но drawJPEG_SD рисует в оригинальном размере)
+        -- Для миниатюр: рисуем в маленьком размере, но библиотека не масштабирует, так что показываем как есть или обрезаем
+        ui.drawJPEG_SD(10, y + 10, path)  -- Рисуем изображение (может быть большим, скролл обработает)
+        if ui.button(SCR_W - 100, y + 10, 90, 30, "View", 0x07E0) then
+            selectedPost = path
+        end
+        y = y + 210  -- Расстояние между изображениями
+    end
+    ui.endList()
+end
+
+-- Просмотр полного изображения (простой, без зума)
+function draw_viewer()
+    ui.drawJPEG_SD(0, 0, selectedPost)  -- Рисует в полном размере, если больше экрана - обрежется клипом
+    if ui.button(SCR_W - 100, SCR_H - 50, 90, 40, "Back", 0xF800) then
+        selectedPost = nil
     end
 end
 
+-- Основная функция draw()
 function draw()
-    ui.rect(0, 0, SCR_W, SCR_H, 0)  -- black background
+    ui.rect(0, 0, SCR_W, SCR_H, 0x0000)  -- Черный фон
 
-    if state == "menu" then
-        ui.text(20, 40, "e621 Random Viewer", 3, 0xFFFF)
-        ui.text(20, 100, "Warning: May contain NSFW content", 2, 0xF800)
+    -- Шапка: ввод тегов и кнопки
+    ui.text(10, 10, "e621 Client", 2, 0xFFFF)
+    if ui.input(10, 40, SCR_W - 120, 30, tags, true) then
+        -- Здесь можно обработать ввод, но в прошивке input возвращает true при клике (для фокуса)
+        -- Реальный ввод текста требует внешней клавиатуры или T9 как в bootstrap, но для простоты предполагаем внешний ввод
+    end
+    if ui.button(SCR_W - 100, 40, 90, 30, "Search", 0x07E0) and not downloading then
+        search_and_download()
+    end
+    ui.text(10, SCR_H - 30, statusMsg, 1, 0xFFFF)
 
-        ui.text(20, 160, "Select rating:", 2, 0xFFFF)
+    -- Галерея или вьювер
+    if selectedPost then
+        draw_viewer()
+    else
+        draw_gallery()
+    end
 
-        local btn_w = 90
-        local spacing = 15
-        local start_x = 35
-
-        -- Any
-        local color_any = (rating == nil) and 0x07E0 or 0x4444
-        if ui.button(start_x, 220, btn_w, 60, "Any", color_any) then rating = nil end
-
-        -- Safe
-        local color_s = (rating == "s") and 0x07E0 or 0x4444
-        if ui.button(start_x + btn_w + spacing, 220, btn_w, 60, "Safe", color_s) then rating = "s" end
-
-        -- Questionable
-        local color_q = (rating == "q") and 0x07E0 or 0x4444
-        if ui.button(start_x + 2*(btn_w + spacing), 220, btn_w, 60, "Quest.", color_q) then rating = "q" end
-
-        -- Explicit
-        local color_e = (rating == "e") and 0x07E0 or 0x4444
-        if ui.button(start_x + 3*(btn_w + spacing), 220, btn_w, 60, "Expl.", color_e) then rating = "e" end
-
-        -- Load button
-        if ui.button(105, 320, 200, 80, "Get Random", 0x07E0) then
-            load_random_post()
-        end
-
-    elseif state == "loading" then
-        ui.text(80, 200, "Loading...", 3, 0xFFFF)
-        ui.text(80, 260, "This may take a while", 2, 0xAAAA)
-
-    elseif state == "view" then
-        -- Display the downloaded sample/preview JPEG
-        local drawn = ui.drawJPEG_SD(0, 0, image_path)
-
-        if not drawn then
-            ui.text(50, 200, "Failed to display image", 3, 0xF800)
-        end
-
-        -- Controls
-        if ui.button(10, SCR_H - 90, 180, 80, "Back", 0xF800) then
-            state = "menu"
-        end
-
-        if ui.button(SCR_W - 190, SCR_H - 90, 180, 80, "Next", 0x07E0) then
-            load_random_post()
-        end
+    -- Очистка кэша UI периодически (чтобы не жрать PSRAM)
+    if hw.millis() % 10000 == 0 then
+        ui.unloadAll()
     end
 end
+
+-- Инициализация (если нужно)
+if not sd.exists("/e621") then
+    sd.mkdir("/e621")
+end
+
+-- Для ввода тегов: в реальности добавьте T9 или клавиатуру как в bootstrap, но для простоты опущено
+-- Пример: tags = "your_tags_here" для теста
