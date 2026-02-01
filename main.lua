@@ -1,6 +1,6 @@
 -- Настройки репозитория
 local user = "kptmx"
-local repo = "luawatch-system"
+local repo = "luawatch"
 local branch = "main"
 
 local SW, SH = 410, 502
