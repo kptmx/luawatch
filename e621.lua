@@ -291,6 +291,7 @@ function loadCurrentImage()
     local success = net.download(
         imageUrl, 
         app.currentPost.cacheKey,
+        "sd",
         function(loaded, total)
             app.downloadProgress = loaded
             app.downloadTotal = total
