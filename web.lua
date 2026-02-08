@@ -1,462 +1,649 @@
 -- Простой веб-браузер для LuaWatch
--- Автор: DeepSeek
+-- Сохранить как /main.lua
 
 local SCR_W, SCR_H = 410, 502
-local PAGE_W, PAGE_H = SCR_W, 400  -- Область для отображения страницы
-local KEYBOARD_Y = 300            -- Начало клавиатуры
+local browser = {}
 
 -- Состояние браузера
-local browser = {
-    url = "https://www.google.com",
-    history = {},
-    history_index = 0,
-    current_page = "",
-    page_pos = 0,  -- Прокрутка страницы
-    loading = false,
-    status = "Готов",
-    zoom = 1.0,
-    cache = {},    -- Кэш загруженных страниц
-    images = {}    -- Кэш изображений
+browser.history = {}
+browser.history_index = 0
+browser.current_url = "about:blank"
+browser.page_content = {}
+browser.scroll_y = 0
+browser.max_scroll = 0
+browser.loading = false
+browser.error = nil
+browser.images = {}
+browser.input_mode = false
+browser.url_input = "https://"
+browser.link_under_touch = nil
+browser.page_title = "Browser"
+browser.cache = {} -- Кэш для загруженных страниц
+
+-- Конфигурация
+browser.config = {
+    user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+    timeout = 10000,
+    max_redirects = 5,
+    image_cache_size = 5 -- Сколько JPEG изображений хранить в памяти
 }
 
--- T9 клавиатура
-local t9 = {
-    [".,!1"] = ".,!1", ["abc2"] = "abc2", ["def3"] = "def3",
-    ["ghi4"] = "ghi4", ["jkl5"] = "jkl5", ["mno6"] = "mno6",
-    ["pqrs7"] = "pqrs7", ["tuv8"] = "tuv8", ["wxyz9"] = "wxyz9",
-    ["*"] = "://.-+=", ["0"] = " ", ["#"] = "#/?"
+-- Палитра цветов
+browser.colors = {
+    background = 0x0000,
+    text = 0xFFFF,
+    link = 0x07FF,
+    visited = 0xAAFF,
+    title = 0xF800,
+    input_bg = 0x2104,
+    input_text = 0xFFFF,
+    loading = 0xFFE0,
+    error = 0xF800,
+    scrollbar = 0x528A
 }
 
-local keys = {
-    ".,!1", "abc2", "def3",
-    "ghi4", "jkl5", "mno6",
-    "pqrs7", "tuv8", "wxyz9",
-    "*", "0", "#",
-    "DEL", "CLR", "OK"
-}
-
--- Ввод URL
-local input_mode = false
-local input_text = ""
-local last_key, last_time, char_idx = "", 0, 0
-local cursor_blink = true
-local cursor_timer = 0
-
--- Прокрутка страницы
-local scroll_speed = 20
-local scroll_btn_size = 40
-
--- Загрузка изображений из кэша
-function load_cached_image(url)
-    if browser.images[url] then
-        return true
+-- Утилиты для работы с URL
+function browser.normalize_url(url, base)
+    if url:sub(1, 7) == "http://" or url:sub(1, 8) == "https://" then
+        return url
+    elseif url:sub(1, 4) == "www." then
+        return "http://" .. url
+    elseif base then
+        if url:sub(1, 1) == "/" then
+            local protocol, domain = base:match("^(https?://[^/]+)")
+            return protocol .. domain .. url
+        else
+            local path = base:match("^(.-/[^/]*)$")
+            if path then
+                return path:gsub("/[^/]*$", "/") .. url
+            end
+        end
     end
-    
-    -- Проверяем, есть ли изображение в памяти
-    local filename = "/cache/" .. string.gsub(url, "[^%w]", "_") .. ".jpg"
-    if fs.exists(filename) then
-        browser.images[url] = filename
-        return true
-    end
-    
-    return false
+    return "http://" .. url
 end
 
--- Кэширование изображения
-function cache_image(url, data)
-    local filename = "/cache/" .. string.gsub(url, "[^%w]", "_") .. ".jpg"
-    fs.save(filename, data)
-    browser.images[url] = filename
+-- Парсинг простого HTML (очень упрощенный)
+function browser.parse_html(html, base_url)
+    local lines = {}
+    local in_pre = false
+    local text_buffer = ""
+    
+    -- Очистка тегов и извлечение текста/ссылок
+    local i = 1
+    while i <= #html do
+        if html:sub(i, i) == "<" then
+            -- Найден тег
+            local tag_end = html:find(">", i)
+            if tag_end then
+                local tag = html:sub(i, tag_end):lower()
+                
+                -- Обработка основных тегов
+                if tag:find("<pre") then
+                    in_pre = true
+                elseif tag == "</pre>" then
+                    in_pre = false
+                elseif tag:find("<img") then
+                    -- Извлечение src у изображений
+                    local src = tag:match('src%s*=%s*["\']([^"\']+)["\']')
+                    if src then
+                        local img_url = browser.normalize_url(src, base_url)
+                        table.insert(lines, {type = "image", url = img_url})
+                    end
+                elseif tag:find("<a%s") then
+                    -- Извлечение href у ссылок
+                    local href = tag:match('href%s*=%s*["\']([^"\']+)["\']')
+                    local link_text = ""
+                    if href then
+                        local link_url = browser.normalize_url(href, base_url)
+                        -- Ищем текст ссылки до закрывающего тега
+                        local close_a = html:find("</a>", tag_end)
+                        if close_a then
+                            link_text = html:sub(tag_end + 1, close_a - 1)
+                            link_text = link_text:gsub("<[^>]+>", "")
+                        end
+                        table.insert(lines, {type = "link", url = link_url, text = link_text})
+                        i = close_a or tag_end
+                    end
+                elseif tag:find("<title>") then
+                    -- Извлечение заголовка
+                    local title_end = html:find("</title>", tag_end)
+                    if title_end then
+                        browser.page_title = html:sub(tag_end + 1, title_end - 1)
+                        browser.page_title = browser.page_title:gsub("%s+", " ")
+                    end
+                elseif tag:find("<h1") or tag:find("<h2") or tag:find("<h3") then
+                    table.insert(lines, {type = "header", level = tonumber(tag:match("<h(%d)")) or 2})
+                elseif tag:find("</h%d") then
+                    if text_buffer:len() > 0 then
+                        table.insert(lines, {type = "text", content = text_buffer})
+                        text_buffer = ""
+                    end
+                end
+                
+                i = tag_end + 1
+            else
+                i = i + 1
+            end
+        else
+            -- Текст
+            local char = html:sub(i, i)
+            if in_pre or char ~= "\n" then
+                text_buffer = text_buffer .. char
+            end
+            
+            -- Разбиваем на строки по длине или символам новой строки
+            if char == "\n" or #text_buffer >= 50 then
+                if text_buffer:len() > 0 then
+                    text_buffer = text_buffer:gsub("^%s+", ""):gsub("%s+$", "")
+                    if text_buffer:len() > 0 then
+                        table.insert(lines, {type = "text", content = text_buffer})
+                    end
+                    text_buffer = ""
+                end
+            end
+            i = i + 1
+        end
+    end
+    
+    -- Добавляем остаток буфера
+    if text_buffer:len() > 0 then
+        text_buffer = text_buffer:gsub("^%s+", ""):gsub("%s+$", "")
+        if text_buffer:len() > 0 then
+            table.insert(lines, {type = "text", content = text_buffer})
+        end
+    end
+    
+    return lines
 end
 
--- Скачивание страницы
-function download_page(url)
+-- Загрузка страницы
+function browser.load_url(url)
+    if not url or url == "" then return end
+    
+    browser.current_url = url
     browser.loading = true
-    browser.status = "Загрузка..."
-    ui.flush()
+    browser.error = nil
+    browser.scroll_y = 0
+    browser.link_under_touch = nil
+    browser.images = {}
     
     -- Проверяем кэш
-    if browser.cache[url] then
-        browser.current_page = browser.cache[url]
+    if browser.cache[url] and os.time() - browser.cache[url].timestamp < 300 then
+        browser.page_content = browser.cache[url].content
+        browser.page_title = browser.cache[url].title
         browser.loading = false
-        browser.status = "Loaded from cache"
-        table.insert(browser.history, url)
-        browser.history_index = #browser.history
+        browser.calculate_layout()
         return
     end
     
-    local res = net.get(url)
-    
-    if res and res.ok then
-        browser.current_page = res.body
-        browser.cache[url] = res.body  -- Кэшируем
-        browser.status = "Loaded"
-        
-        -- Сохраняем в историю
+    -- Добавляем в историю
+    if #browser.history == 0 or browser.history[#browser.history] ~= url then
         table.insert(browser.history, url)
         browser.history_index = #browser.history
+    end
+    
+    -- Загружаем страницу
+    local result = net.get(url)
+    
+    if result and result.ok and result.code == 200 then
+        -- Успешная загрузка
+        browser.page_content = browser.parse_html(result.body, url)
         
-        -- Пытаемся найти и загрузить изображения
-        extract_and_load_images(res.body, url)
+        -- Сохраняем в кэш
+        browser.cache[url] = {
+            content = browser.page_content,
+            title = browser.page_title,
+            timestamp = os.time()
+        }
+        
+        -- Очистка старых записей кэша
+        local cache_keys = {}
+        for k in pairs(browser.cache) do table.insert(cache_keys, k) end
+        table.sort(cache_keys, function(a,b) 
+            return browser.cache[a].timestamp < browser.cache[b].timestamp 
+        end)
+        
+        while #cache_keys > 10 do
+            browser.cache[cache_keys[1]] = nil
+            table.remove(cache_keys, 1)
+        end
+        
+        browser.error = nil
     else
-        browser.status = "Ошибка: " .. (res and res.code or "нет соединения")
-        browser.current_page = "<h1>Error</h1><p>loading failed: " .. url .. "</p>"
+        -- Ошибка загрузки
+        browser.error = "Failed to load: " .. (result and tostring(result.code) or "no connection")
+        browser.page_content = {{type = "text", content = "Error: " .. browser.error}}
+        browser.page_title = "Error"
     end
     
     browser.loading = false
+    browser.calculate_layout()
 end
 
--- Извлечение и загрузка изображений из HTML
-function extract_and_load_images(html, base_url)
-    local base_domain = string.match(base_url, "https?://[^/]+")
+-- Расчет макета для скроллинга
+function browser.calculate_layout()
+    local y = 0
+    local line_height = 20
+    local margin = 5
     
-    -- Ищем все теги img
-    for img_url in string.gmatch(html, '<img[^>]+src="([^"]+)"') do
-        -- Преобразуем относительные URL в абсолютные
-        if string.sub(img_url, 1, 1) == "/" then
-            img_url = base_domain .. img_url
-        elseif not string.find(img_url, "https?://") then
-            img_url = base_domain .. "/" .. img_url
-        end
-        
-        -- Проверяем, JPEG ли это
-        if string.find(string.lower(img_url), "%.jpg$") or 
-           string.find(string.lower(img_url), "%.jpeg$") then
-           
-            -- Проверяем кэш
-            if not load_cached_image(img_url) then
-                -- Загружаем в фоновом режиме
-                local download_res = net.get(img_url)
-                if download_res and download_res.ok then
-                    cache_image(img_url, download_res.body)
-                end
-            end
+    for _, element in ipairs(browser.page_content) do
+        if element.type == "text" then
+            element.y = y
+            element.height = line_height
+            y = y + line_height + margin
+        elseif element.type == "header" then
+            element.y = y
+            element.height = line_height + 10
+            y = y + element.height + margin
+        elseif element.type == "link" then
+            element.y = y
+            element.height = line_height
+            y = y + line_height + margin
+        elseif element.type == "image" then
+            element.y = y
+            element.height = 100 -- Предполагаемая высота
+            y = y + 100 + margin
+            element.loaded = false
         end
     end
+    
+    browser.max_scroll = math.max(0, y - SCR_H + 100)
 end
 
--- Обработка T9 ввода
-function handle_t9_input(k)
-    local now = hw.millis()
-    local chars = t9[k]
-    if not chars then return end
+-- Загрузка изображения
+function browser.load_image(element)
+    if element.loaded or element.loading then return end
     
-    -- Если нажата та же клавиша в течение 800мс — меняем символ
-    if k == last_key and (now - last_time) < 800 then
-        input_text = input_text:sub(1, -2)
-        char_idx = (char_idx % #chars) + 1
+    element.loading = true
+    
+    -- Пробуем загрузить из кэша
+    if browser.images[element.url] then
+        element.bitmap = browser.images[element.url]
+        element.loaded = true
+        element.loading = false
+        return
+    end
+    
+    -- Определяем, откуда грузить (SD или интернет)
+    if element.url:match("^https?://") then
+        -- Загружаем из интернета
+        local filename = "/cache/" .. element.url:gsub("[^%w]", "_") .. ".jpg"
+        
+        -- Пробуем скачать
+        local success = net.download(element.url, filename, "flash", 
+            function(loaded, total)
+                -- Коллбэк прогресса (можно добавить индикатор)
+            end)
+        
+        if success then
+            if ui.drawJPEG(0, 0, filename) then
+                element.loaded = true
+                browser.images[element.url] = true
+            end
+            fs.remove(filename) -- Удаляем временный файл
+        end
     else
-        char_idx = 1
-    end
-    
-    input_text = input_text .. chars:sub(char_idx, char_idx)
-    last_key, last_time = k, now
-end
-
--- Простой парсер HTML для отображения
-function render_simple_html(html)
-    -- Удаляем теги script и style
-    html = string.gsub(html, "<script[^>]*>.-</script>", "")
-    html = string.gsub(html, "<style[^>]*>.-</style>", "")
-    
-    -- Заменяем теги заголовков
-    html = string.gsub(html, "<h1[^>]*>(.-)</h1>", "\n=== %1 ===\n")
-    html = string.gsub(html, "<h2[^>]*>(.-)</h2>", "\n== %1 ==\n")
-    html = string.gsub(html, "<h3[^>]*>(.-)</h3>", "\n= %1 =\n")
-    
-    -- Обрабатываем параграфы
-    html = string.gsub(html, "<p[^>]*>(.-)</p>", "%1\n")
-    
-    -- Извлекаем текст из ссылок
-    html = string.gsub(html, '<a[^>]+href="([^"]+)"[^>]*>(.-)</a>', 
-        function(url, text)
-            return "[LINK:" .. url .. "]" .. text .. "[/LINK]"
-        end)
-    
-    -- Удаляем остальные теги
-    html = string.gsub(html, "<[^>]+>", "")
-    
-    -- Декодируем HTML-сущности
-    html = string.gsub(html, "&lt;", "<")
-    html = string.gsub(html, "&gt;", ">")
-    html = string.gsub(html, "&amp;", "&")
-    html = string.gsub(html, "&quot;", '"')
-    
-    -- Ограничиваем длину для производительности
-    if #html > 5000 then
-        html = string.sub(html, 1, 5000) .. "\n[... cut ...]"
-    end
-    
-    return html
-end
-
--- Отображение страницы
-function render_page()
-    if browser.current_page == "" then return end
-    
-    -- Простой рендеринг текста
-    local text = render_simple_html(browser.current_page)
-    
-    -- Разбиваем на строки
-    local lines = {}
-    for line in string.gmatch(text .. "\n", "(.-)\n") do
-        table.insert(lines, line)
-    end
-    
-    -- Отображаем с прокруткой
-    local start_line = math.floor(browser.page_pos / 20)
-    local y_offset = 100 - (browser.page_pos % 20)
-    
-    for i = start_line + 1, math.min(#lines, start_line + 20) do
-        local line = lines[i]
-        local x = 10
-        
-        -- Парсим ссылки в строке
-        while true do
-            local link_start, link_end, url, link_text = 
-                string.find(line, "%[LINK:([^%]]+)%]([^%[]+)%[/LINK%]")
-            
-            if not link_start then break end
-            
-            -- Текст до ссылки
-            ui.text(x, y_offset, string.sub(line, 1, link_start-1), 1, 65535)
-            x = x + (link_start-1) * 8
-            
-            -- Сама ссылка (подчеркнутая)
-            ui.text(x, y_offset, link_text, 1, 2016)
-            
-            -- Проверяем, нажата ли ссылка
-            local touch = ui.getTouch()
-            if touch.touching then
-                local tx, ty = touch.x, touch.y
-                if tx >= x and tx <= x + #link_text * 8 and
-                   ty >= y_offset and ty <= y_offset + 20 then
-                    ui.rect(x, y_offset + 18, #link_text * 8, 2, 2016)  -- Подчеркивание
-                    
-                    if touch.released then
-                        browser.url = url
-                        download_page(url)
-                        browser.page_pos = 0
-                        return
-                    end
-                end
-            else
-                ui.rect(x, y_offset + 18, #link_text * 8, 2, 2016)  -- Подчеркивание
-            end
-            
-            x = x + #link_text * 8
-            line = string.sub(line, link_end + 1)
-        end
-        
-        -- Остаток строки
-        ui.text(x, y_offset, line, 1, 65535)
-        
-        y_offset = y_offset + 20
-        if y_offset > PAGE_H then break end
-    end
-end
-
--- Поиск изображений в странице и их отображение
-function render_images()
-    local base_domain = string.match(browser.url, "https?://[^/]+")
-    local y_offset = 100 - (browser.page_pos % 20)
-    
-    -- Ищем все изображения в HTML
-    for img_url in string.gmatch(browser.current_page, '<img[^>]+src="([^"]+)"') do
-        -- Преобразуем относительные URL
-        if string.sub(img_url, 1, 1) == "/" then
-            img_url = base_domain .. img_url
-        elseif not string.find(img_url, "https?://") then
-            img_url = base_domain .. "/" .. img_url
-        end
-        
-        -- Показываем только JPEG
-        if string.find(string.lower(img_url), "%.jpg$") or 
-           string.find(string.lower(img_url), "%.jpeg$") then
-           
-            if load_cached_image(img_url) then
-                -- Пробуем отобразить с SD-карты
-                local success = ui.drawJPEG_SD(10, y_offset, browser.images[img_url])
-                if not success then
-                    -- Пробуем из flash
-                    success = ui.drawJPEG(10, y_offset, browser.images[img_url])
-                end
-                
-                if success then
-                    y_offset = y_offset + 100  -- Отступ для следующего изображения
-                end
-            else
-                -- Показываем плейсхолдер
-                ui.rect(10, y_offset, 100, 100, 2114)
-                ui.text(15, y_offset + 40, "Loading...", 1, 65535)
-                y_offset = y_offset + 110
-            end
+        -- Локальный файл
+        if ui.drawJPEG(0, 0, element.url) then
+            element.loaded = true
+            browser.images[element.url] = true
         end
     end
+    
+    element.loading = false
+    
+    -- Ограничиваем размер кэша изображений
+    local image_count = 0
+    for _ in pairs(browser.images) do image_count = image_count + 1 end
+    
+    if image_count > browser.config.image_cache_size then
+        -- Удаляем самое старое изображение (здесь просто очищаем)
+        browser.images = {}
+    end
 end
 
--- Отображение интерфейса браузера
-function draw_browser()
+-- Отрисовка браузера
+function browser.draw()
     -- Фон
-    ui.rect(0, 0, SCR_W, SCR_H, 0)
+    ui.rect(0, 0, SCR_W, SCR_H, browser.colors.background)
     
-    -- Панель статуса
-    ui.rect(0, 0, SCR_W, 40, 2114)  -- Темно-серый
-    ui.text(10, 10, browser.status, 1, 65535)
-    
-    if browser.loading then
-        ui.text(SCR_W - 80, 10, "L", 2, 65535)
-    else
-        ui.text(SCR_W - 80, 10, "OK", 2, 2016)
-    end
-    
-    -- Поле адреса
-    ui.rect(0, 45, SCR_W, 45, 2114)
-    if ui.input(10, 50, SCR_W - 20, 35, browser.url, false) then
-        input_mode = true
-        input_text = browser.url
-    end
+    -- Панель навигации
+    ui.rect(0, 0, SCR_W, 40, 0x2104)
     
     -- Кнопки навигации
-    if ui.button(10, 100, 60, 35, "Back", 1040) and browser.history_index > 1 then
-        browser.history_index = browser.history_index - 1
-        browser.url = browser.history[browser.history_index]
-        download_page(browser.url)
-        browser.page_pos = 0
-    end
-    
-    if ui.button(80, 100, 60, 35, "Forward", 1040) and 
-       browser.history_index < #browser.history then
-        browser.history_index = browser.history_index + 1
-        browser.url = browser.history[browser.history_index]
-        download_page(browser.url)
-        browser.page_pos = 0
-    end
-    
-    if ui.button(150, 100, 80, 35, "Reload", 2016) then
-        download_page(browser.url)
-        browser.page_pos = 0
-    end
-    
-    if ui.button(240, 100, 70, 35, "Home", 63488) then
-        browser.url = "https://www.google.com"
-        download_page(browser.url)
-        browser.page_pos = 0
-    end
-    
-    -- Область содержимого
-    ui.rect(0, 140, SCR_W, PAGE_H, 0)
-    render_page()
-    render_images()
-    
-    -- Прокрутка
-    if #browser.current_page > 0 then
-        local content_height = #browser.current_page / 3
-        local scrollbar_height = math.max(20, PAGE_H * PAGE_H / content_height)
-        local scrollbar_pos = (browser.page_pos / content_height) * (PAGE_H - scrollbar_height)
-        
-        ui.rect(SCR_W - 10, 140, 10, PAGE_H, 2114)  -- Дорожка
-        ui.rect(SCR_W - 10, 140 + scrollbar_pos, 10, scrollbar_height, 8452)  -- Ползунок
-        
-        -- Кнопки прокрутки
-        if ui.button(SCR_W - 60, 140, 50, scroll_btn_size, "↑", 1040) then
-            browser.page_pos = math.max(0, browser.page_pos - scroll_speed)
-        end
-        
-        if ui.button(SCR_W - 60, 140 + PAGE_H - scroll_btn_size, 50, scroll_btn_size, "↓", 1040) then
-            browser.page_pos = browser.page_pos + scroll_speed
+    if ui.button(5, 5, 60, 30, "Back", 0x528A) then
+        if browser.history_index > 1 then
+            browser.history_index = browser.history_index - 1
+            browser.load_url(browser.history[browser.history_index])
         end
     end
-end
-
--- Отображение T9 клавиатуры для ввода
-function draw_keyboard()
-    -- Фон клавиатуры
-    ui.rect(0, KEYBOARD_Y, SCR_W, SCR_H - KEYBOARD_Y, 2114)
     
-    -- Поле ввода
-    ui.rect(10, KEYBOARD_Y + 10, SCR_W - 20, 40, 0)
-    
-    -- Мигающий курсор
-    local cursor_time = hw.millis() - cursor_timer
-    if cursor_time > 1000 then
-        cursor_blink = not cursor_blink
-        cursor_timer = hw.millis()
+    if ui.button(70, 5, 60, 30, "Forward", 0x528A) then
+        if browser.history_index < #browser.history then
+            browser.history_index = browser.history_index + 1
+            browser.load_url(browser.history[browser.history_index])
+        end
     end
     
-    local display_text = input_text
-    if cursor_blink and cursor_time % 1000 < 500 then
-        display_text = display_text .. "|"
+    if ui.button(135, 5, 60, 30, "Refresh", 0x528A) then
+        browser.load_url(browser.current_url)
     end
     
-    ui.text(15, KEYBOARD_Y + 25, display_text, 2, 65535)
+    -- Поле ввода URL
+    if ui.input(200, 5, 150, 30, browser.current_url, false) then
+        browser.input_mode = true
+        browser.url_input = browser.current_url
+    end
     
-    -- Клавиши T9
-    for i, k in ipairs(keys) do
-        local r = math.floor((i - 1) / 3)
-        local c = (i - 1) % 3
+    if ui.button(355, 5, 50, 30, "Go", 0x07E0) then
+        browser.input_mode = true
+        browser.url_input = browser.current_url
+    end
+    
+    -- Область контента
+    ui.pushClip(0, 40, SCR_W, SCR_H - 40)
+    
+    local start_y = 40 - browser.scroll_y
+    
+    -- Отображение контента
+    for _, element in ipairs(browser.page_content) do
+        local y = start_y + element.y
         
-        local btn_color = 8452
-        if k == "OK" then btn_color = 2016 end
-        if k == "DEL" or k == "CLR" then btn_color = 63488 end
-        
-        if ui.button(10 + c * 130, KEYBOARD_Y + 60 + r * 45, 125, 40, k, btn_color) then
-            if k == "DEL" then
-                input_text = input_text:sub(1, -2)
-            elseif k == "CLR" then
-                input_text = ""
-            elseif k == "OK" then
-                if #input_text > 0 then
-                    browser.url = input_text
-                    if not string.find(browser.url, "https?://") then
-                        browser.url = "https://" .. browser.url
-                    end
-                    download_page(browser.url)
-                    browser.page_pos = 0
+        -- Проверяем видимость элемента
+        if y < SCR_H and y + element.height > 40 then
+            if element.type == "text" then
+                ui.text(10, y, element.content, 2, browser.colors.text)
+            elseif element.type == "header" then
+                ui.text(10, y, element.content or "", 3, browser.colors.title)
+            elseif element.type == "link" then
+                local color = browser.colors.link
+                if browser.visited_links and browser.visited_links[element.url] then
+                    color = browser.colors.visited
                 end
-                input_mode = false
-            else
-                handle_t9_input(k)
+                
+                ui.text(10, y, element.text or element.url, 2, color)
+                
+                -- Подчеркивание ссылки
+                ui.rect(10, y + 15, #(element.text or element.url) * 12, 1, color)
+            elseif element.type == "image" then
+                -- Заглушка для изображения
+                ui.rect(10, y, SCR_W - 20, 100, 0x2104)
+                ui.text(20, y + 40, "[Image: " .. element.url:match("([^/]+)$") or "image" .. "]", 2, 0x7BEF)
+                
+                -- Пробуем загрузить изображение при необходимости
+                if not element.loaded and not element.loading then
+                    browser.load_image(element)
+                end
             end
         end
     end
     
-    -- Кнопка отмены
-    if ui.button(SCR_W - 100, KEYBOARD_Y - 50, 90, 40, "Cancel", 2114) then
-        input_mode = false
+    -- Индикатор загрузки
+    if browser.loading then
+        ui.rect(SCR_W/2 - 30, SCR_H/2 - 10, 60, 20, browser.colors.loading)
+        ui.text(SCR_W/2 - 25, SCR_H/2 - 5, "Loading...", 2, 0x0000)
     end
-end
-
--- Основной цикл отрисовки
-function draw()
-    if input_mode then
-        draw_browser()
-        draw_keyboard()
-    else
-        draw_browser()
+    
+    -- Сообщение об ошибке
+    if browser.error then
+        ui.rect(10, 50, SCR_W - 20, 40, browser.colors.error)
+        ui.text(15, 60, browser.error, 2, 0xFFFF)
+    end
+    
+    -- Скроллбар
+    if browser.max_scroll > 0 then
+        local scroll_height = (SCR_H - 40) * (SCR_H - 40) / (browser.max_scroll + SCR_H - 40)
+        local scroll_pos = (SCR_H - 40 - scroll_height) * (browser.scroll_y / browser.max_scroll)
+        ui.rect(SCR_W - 5, 40 + scroll_pos, 5, scroll_height, browser.colors.scrollbar)
+    end
+    
+    ui.popClip()
+    
+    -- Обработка скроллинга
+    local scroll_area = ui.beginList(0, 40, SCR_W, SCR_H - 40, browser.scroll_y, browser.max_scroll + SCR_H - 40)
+    if scroll_area ~= browser.scroll_y then
+        browser.scroll_y = scroll_area
+    end
+    ui.endList()
+    
+    -- Диалог ввода URL
+    if browser.input_mode then
+        -- Затемнение фона
+        ui.rect(0, 0, SCR_W, SCR_H, 0x0000)
+        ui.rect(20, 100, SCR_W - 40, 200, 0x2104)
+        ui.text(30, 110, "Enter URL:", 3, 0xFFFF)
         
-        -- Кнопка для открытия клавиатуры
-        if ui.button(SCR_W - 120, 50, 110, 35, "Enter URL", 1040) then
-            input_mode = true
-            input_text = browser.url
-            cursor_timer = hw.millis()
+        -- Поле ввода
+        if ui.input(30, 150, SCR_W - 100, 40, browser.url_input, true) then
+            -- Редактирование URL
+        end
+        
+        -- Кнопки
+        if ui.button(30, 210, 100, 40, "Cancel", 0xF800) then
+            browser.input_mode = false
+        end
+        
+        if ui.button(SCR_W - 130, 210, 100, 40, "Go", 0x07E0) then
+            browser.load_url(browser.url_input)
+            browser.input_mode = false
+        end
+        
+        -- Клавиатура
+        local keys = {"q","w","e","r","t","y","u","i","o","p",
+                      "a","s","d","f","g","h","j","k","l",
+                      "z","x","c","v","b","n","m",".com",
+                      "://","/","DEL","SPACE","ENTER"}
+        
+        local key_x, key_y = 30, 260
+        local key_w, key_h = 35, 35
+        
+        for i, key in ipairs(keys) do
+            if key == "ENTER" then
+                key_w = 80
+            elseif key == "SPACE" then
+                key_w = 120
+            elseif key == "DEL" then
+                key_w = 60
+            elseif key == "://" or key == ".com" then
+                key_w = 60
+            end
+            
+            if ui.button(key_x, key_y, key_w, key_h, key, 0x528A) then
+                if key == "DEL" then
+                    browser.url_input = browser.url_input:sub(1, -2)
+                elseif key == "SPACE" then
+                    browser.url_input = browser.url_input .. " "
+                elseif key == "ENTER" then
+                    browser.load_url(browser.url_input)
+                    browser.input_mode = false
+                elseif key == "://" then
+                    browser.url_input = browser.url_input .. "://"
+                elseif key == ".com" then
+                    browser.url_input = browser.url_input .. ".com"
+                else
+                    browser.url_input = browser.url_input .. key
+                end
+            end
+            
+            key_x = key_x + key_w + 5
+            if key_x + key_w > SCR_W - 30 then
+                key_x = 30
+                key_y = key_y + key_h + 5
+            end
+        end
+    end
+    
+    -- Обработка нажатий на ссылки
+    if not browser.input_mode and ui.getTouch().released then
+        local touch = ui.getTouch()
+        if touch.y > 40 then
+            local content_y = touch.y + browser.scroll_y - 40
+            
+            for _, element in ipairs(browser.page_content) do
+                if element.type == "link" then
+                    if content_y >= element.y and content_y <= element.y + element.height then
+                        browser.load_url(element.url)
+                        
+                        -- Отмечаем как посещенную
+                        if not browser.visited_links then
+                            browser.visited_links = {}
+                        end
+                        browser.visited_links[element.url] = true
+                        break
+                    end
+                elseif element.type == "image" then
+                    if content_y >= element.y and content_y <= element.y + element.height then
+                        -- Просмотр изображения в полном размере
+                        browser.view_image(element.url)
+                        break
+                    end
+                end
+            end
         end
     end
 end
 
--- Загрузка начальной страницы
-function init_browser()
+-- Просмотрщик изображений
+function browser.view_image(url)
+    local viewing = true
+    local image_loaded = false
+    local zoom = 1.0
+    local offset_x, offset_y = 0, 0
+    local drag_start = nil
+    
+    while viewing do
+        -- Фон
+        ui.rect(0, 0, SCR_W, SCR_H, 0x0000)
+        
+        if not image_loaded then
+            -- Загрузка изображения
+            ui.text(SCR_W/2 - 50, SCR_H/2 - 10, "Loading image...", 2, 0xFFFF)
+            
+            local filename = "/temp_view.jpg"
+            if url:match("^https?://") then
+                net.download(url, filename, "flash")
+            else
+                -- Копируем локальный файл
+                local source = fs.readBytes(url)
+                fs.save(filename, source)
+            end
+            
+            image_loaded = ui.drawJPEG(0, 0, filename)
+            fs.remove(filename)
+        else
+            -- Отображение изображения
+            local display_w = SCR_W * zoom
+            local display_h = SCR_H * zoom
+            
+            ui.pushClip(0, 0, SCR_W, SCR_H)
+            -- Здесь должна быть логика отрисовки с учетом zoom и offset
+            -- Для простоты просто рисуем в центре
+            if ui.drawJPEG((SCR_W - 400)/2 + offset_x, 
+                          (SCR_H - 300)/2 + offset_y, 
+                          url) then
+                -- Изображение отрисовано
+            end
+            ui.popClip()
+        end
+        
+        -- Панель управления
+        ui.rect(0, SCR_H - 50, SCR_W, 50, 0x2104)
+        
+        if ui.button(10, SCR_H - 45, 80, 40, "Back", 0xF800) then
+            viewing = false
+        end
+        
+        if ui.button(SCR_W - 90, SCR_H - 45, 80, 40, "Save", 0x07E0) then
+            -- Сохранение изображения на SD
+            if sd then
+                local filename = "/sdcard/image_" .. os.time() .. ".jpg"
+                if url:match("^https?://") then
+                    net.download(url, filename, "sd")
+                else
+                    -- Копирование файла
+                    local data = fs.readBytes(url)
+                    sd.append(filename, data)
+                end
+            end
+        end
+        
+        -- Обработка жестов для zoom/pan
+        local touch = ui.getTouch()
+        if touch.pressed then
+            drag_start = {x = touch.x, y = touch.y}
+        elseif touch.touching and drag_start then
+            local dx = touch.x - drag_start.x
+            local dy = touch.y - drag_start.y
+            offset_x = offset_x + dx
+            offset_y = offset_y + dy
+            drag_start = {x = touch.x, y = touch.y}
+        elseif touch.released then
+            drag_start = nil
+        end
+        
+        ui.flush()
+    end
+    
+    -- Очистка кэша изображений при выходе
+    browser.images = {}
+end
+
+-- Инициализация браузера
+function browser.init()
     -- Создаем папку для кэша
     if not fs.exists("/cache") then
         fs.mkdir("/cache")
     end
     
-    -- Загружаем домашнюю страницу
-    download_page(browser.url)
+    -- Начальная страница
+    browser.load_url("about:blank")
+    
+    -- Стартовая страница с инструкциями
+    browser.page_content = {
+        {type = "header", content = "Simple Web Browser", level = 1},
+        {type = "text", content = "Welcome to the Lua Web Browser!"},
+        {type = "text", content = "Features:"},
+        {type = "text", content = "• Text and link navigation"},
+        {type = "text", content = "• JPEG image display"},
+        {type = "text", content = "• Scrollable pages"},
+        {type = "text", content = "• History and cache"},
+        {type = "text", content = ""},
+        {type = "link", url = "https://www.example.com", text = "Example Website"},
+        {type = "link", url = "https://www.wikipedia.org", text = "Wikipedia"},
+        {type = "link", url = "https://httpbin.org/image/jpeg", text = "Test JPEG Image"},
+        {type = "text", content = ""},
+        {type = "text", content = "Tap the URL bar to enter a new address."}
+    }
+    browser.page_title = "Welcome"
+    browser.calculate_layout()
 end
 
--- Инициализация при старте
-init_browser()
+-- Главная функция
+function main()
+    browser.init()
+    
+    -- Основной цикл
+    while true do
+        browser.draw()
+        ui.flush()
+        
+        -- Проверка обновления каждые 30 секунд
+        if hw.millis() % 30000 < 16 then
+            -- Можно добавить автообновление или другие фоновые задачи
+        end
+    end
+end
 
--- Основной цикл (вызывается из C++)
--- function draw() уже определена выше
+-- Запуск
+if wifi_ready then
+    main()
+else
+    -- Ждем WiFi
+    while net.status() ~= 3 do
+        ui.rect(0, 0, SCR_W, SCR_H, 0x0000)
+        ui.text(50, SCR_H/2 - 20, "Waiting for WiFi...", 3, 0xFFFF)
+        ui.flush()
+        net.connect(wifi_ssid, wifi_password)
+    end
+    main()
+end
