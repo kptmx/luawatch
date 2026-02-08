@@ -456,6 +456,7 @@ function draw()
             local img_url = item.image_url
             local cache_entry = img_url and image_cache[img_url]
             local is_supported = is_supported_image(img_url)
+            local clicked = ui.button(10, cy, SCR_W - 20, IMAGE_H, "", 0x0101)
             
             -- Цвет фона
             local bg_color = 0x2104
@@ -520,7 +521,6 @@ function draw()
             end
             
             -- Кнопка для загрузки
-            local clicked = ui.button(10, cy, SCR_W - 20, IMAGE_H, "", 0x0101)
             if clicked and is_supported and img_url and not currently_downloading then
                 if not cache_entry or (not cache_entry.loading and not cache_entry.loaded) then
                     load_image_to_cache(img_url)
