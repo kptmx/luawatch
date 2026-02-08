@@ -43,7 +43,7 @@ local function load_page(url)
         return
     end
     
-    ui.text(20, 20, "Loading: " .. url:sub(1,30), 20, 0xFFFF00)
+    ui.text(20, 20, "Loading: " .. url:sub(1,30), 2, 0xFFFF00)
     ui.flush()
     
     local resp = net.get(url)
@@ -65,7 +65,7 @@ local function draw_url_bar()
         disp_text = disp_text .. "|"
     end
     
-    ui.text(20, 22, disp_text, 20, input_focused and COLOR_INPUT_T or COLOR_TEXT)
+    ui.text(20, 22, disp_text, 2, input_focused and COLOR_INPUT_T or COLOR_TEXT)
 end
 
 local function draw_t9_keyboard()
@@ -96,7 +96,7 @@ local function draw_t9_keyboard()
             
             ui.rect(x, y, key_w, key_h, color)
             ui.rect(x+2, y+2, key_w-4, key_h-4, COLOR_BG)
-            ui.text(x + key_w/2 - #text*6, y + key_h/2 - 10, text, 22, COLOR_TEXT)
+            ui.text(x + key_w/2 - #text*6, y + key_h/2 - 10, text, 2, COLOR_TEXT)
         end
     end
 end
@@ -140,7 +140,7 @@ local function render_content()
                     local ok = ui.drawJPEG_SD(20, y, img_path)
                     y = y + (ok and 200 or line_h)
                 else
-                    ui.text(20, y, "[IMG: " .. img_src:sub(-20) .. "]", 18, 0xFF4400)
+                    ui.text(20, y, "[IMG: " .. img_src:sub(-20) .. "]", 2, 0xFF4400)
                     y = y + line_h
                 end
             else
@@ -148,7 +148,7 @@ local function render_content()
                 local text = line:gsub("<[^>]*>", ""):gsub("&nbsp;", " ")
                 text = text:gsub("%s+", " "):match("^%s*(.-)%s*$")
                 if #text > 0 then
-                    ui.text(15, y, text, 20, COLOR_TEXT)
+                    ui.text(15, y, text, 2, COLOR_TEXT)
                     y = y + line_h
                 end
             end
@@ -235,7 +235,7 @@ function draw()
     
     -- Статус
     local batt = hw.getBatt()
-    ui.text(SCR_W-80, 10, batt .. "%", 18, 0x00FF00)
+    ui.text(SCR_W-80, 10, batt .. "%", 2, 0x00FF00)
     
     ui.flush()
 end
