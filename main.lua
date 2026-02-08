@@ -205,27 +205,11 @@ end
 
 -- ДОБАВЛЕНО: Загрузка скрипта с выбором места сохранения
 function download_script(item)
-    local r = net.get("https://raw.githubusercontent.com/"..user.."/"..repo.."/"..branch.."/"..item.file)
-    if r.ok then
-        -- Спрашиваем куда сохранить
-        msg = "Save to: [F]lash or [S]D?"
-        ui.flush()
-        
-        -- В реальности здесь нужно сделать выбор через интерфейс
-        -- Для простоты сохраняем в оба места
-        fs.remove("/"..item.file)
-        fs.save("/"..item.file, r.body)
-        
-        local sd_ok, sd_err = check_sd()
-        if sd_ok then
-            sd.remove("/"..item.file)
-            sd.append("/"..item.file, r.body)
-            msg = "Saved to both!"
-        else
-            msg = "Saved to flash only"
-        end
-    else 
-        msg = "Download failed" 
+    fs.remove("/"..item.file)
+    local r = net.download("https://raw.githubusercontent.com/"..user.."/"..repo.."/"..branch.."/"..item.file, "/"..item.file, "flash")
+    msg = "Downloaded"
+    if not r then
+        msg = "Download failed!"
     end
 end
 
