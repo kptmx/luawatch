@@ -50,22 +50,52 @@ local function resolve_url(base, href)
     local path = base:match("^https?://[^/]+(.*/)") or "/"
     return proto .. domain .. path .. href
 end
+-- Вспомогательная функция для конвертации Unicode-кода в UTF-8 строку
+local function utf8_from_code(code)
+    code = math.floor(code)
+    if code < 128 then
+        return string.char(code)
+    elseif code < 2048 then
+        -- 2 байта
+        return string.char(192 + math.floor(code/64), 128 + (code % 64))
+    elseif code < 65536 then
+        -- 3 байта (базовая многоязычная плоскость, включая кириллицу)
+        return string.char(224 + math.floor(code/4096), 128 + math.floor((code/64)%64), 128 + (code%64))
+    elseif code < 1114112 then
+        -- 4 байта (эмодзи и редкие символы)
+        return string.char(240 + math.floor(code/262144), 128 + math.floor((code/4096)%64), 128 + math.floor((code/64)%64), 128 + (code%64))
+    end
+    return "?" -- Если код некорректен
+end
 
--- Декодирование HTML-сущностей
+-- Исправленная функция декодирования
 local function decode_html_entities(str)
     if not str then return "" end
     local map = {
         amp = "&", lt = "<", gt = ">", quot = "\"", apos = "'", nbsp = " ",
-        copy = "©", reg = "®", trade = "™", mdash = "—", ndash = "–"
+        copy = "©", reg = "®", trade = "™", mdash = "—", ndash = "–",
+        laquo = "«", raquo = "»"
     }
-    str = str:gsub("&(#?x?)(%w+);", function(type, val)
-        if type == "" then return map[val] or "" end
-        if type == "#" then return string.char(tonumber(val)) end
-        if type == "#x" then return string.char(tonumber(val, 16)) end
+    
+    return str:gsub("&(#?x?)(%w+);", function(type, val)
+        if type == "" then 
+            -- Если сущность именованная (&amp;), берем из таблицы
+            -- Если нет в таблице, возвращаем как было, чтобы не терять текст
+            return map[val] or ("&" .. val .. ";")
+        end
+        
+        local code
+        if type == "#" then 
+            code = tonumber(val) 
+        elseif type == "#x" then 
+            code = tonumber(val, 16) 
+        end
+        
+        if code then
+            return utf8_from_code(code)
+        end
     end)
-    return str
 end
-
 -- Очистка текста от мусора
 local function clean_text(txt)
     -- Заменяем любые пробельные символы (табы, переносы) на пробел
