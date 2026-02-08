@@ -1,650 +1,433 @@
--- Простой веб-браузер для LuaWatch
-local Browser = {
-    url = "",
-    content = "",
-    scrollY = 0,
-    pageWidth = 390,
-    pageHeight = 2000,
-    loading = false,
+-- Simple Web Browser для LuaWatch
+-- Автор: ChatGPT
+-- Версия: 1.0
+
+-- Константы экрана
+local SCR_W, SCR_H = 410, 502
+local HEADER_H = 40
+local FOOTER_H = 40
+local CONTENT_H = SCR_H - HEADER_H - FOOTER_H
+
+-- Состояние браузера
+local state = {
+    -- История и навигация
     history = {},
-    historyIndex = 0,
-    cache = {},
-    images = {},
-    links = {},
-    baseUrl = "",
-    screenW = 410,
-    screenH = 502,
-    zoom = 1.0,
-    lastTouchY = 0
+    history_index = 0,
+    
+    -- Текущая страница
+    page = {
+        url = "",
+        title = "New Tab",
+        content = {},
+        links = {},
+        scroll_y = 0,
+        total_height = 0
+    },
+    
+    -- Ввод URL
+    input_mode = false,
+    url_input = "https://example.com",
+    
+    -- Статус
+    loading = false,
+    status = "Ready",
+    last_load_time = 0
 }
 
--- Кодировка URL
-function Browser.urlEncode(str)
-    if str then
-        str = string.gsub(str, "([^%w%-%.%_%~])", function(c)
-            return string.format("%%%02X", string.byte(c))
+-- Вспомогательные функции
+function string.starts(str, start)
+    return str:sub(1, #start) == start
+end
+
+function string.trim(s)
+    return s:match("^%s*(.-)%s*$")
+end
+
+function encodeURL(url)
+    return url:gsub("[^a-zA-Z0-9%-._~:/?#%[%]@!$&'()*+,;=]", 
+        function(c) return string.format("%%%02X", string.byte(c)) end)
+end
+
+-- Парсинг HTML (очень упрощенный)
+function parseHTML(html)
+    local lines = {}
+    local links = {}
+    local link_index = 1
+    local y = 0
+    local line_height = 20
+    local padding = 5
+    
+    -- Удаляем теги <script> и <style>
+    html = html:gsub("<script[^>]*>.-</script>", "")
+    html = html:gsub("<style[^>]*>.-</style>", "")
+    
+    -- Заменяем <br> на переносы строк
+    html = html:gsub("<br%s*/?>", "\n")
+    
+    -- Обработка ссылок
+    html = html:gsub('<a[^>]+href="([^"]+)"[^>]*>(.-)</a>', 
+        function(href, text)
+            local start = #lines + 1
+            local link_id = link_index
+            link_index = link_index + 1
+            
+            -- Обрабатываем текст ссылки
+            local clean_text = text:gsub("<[^>]+>", ""):trim()
+            if clean_text ~= "" then
+                table.insert(lines, {text = clean_text, type = "link", link_id = link_id, y = y})
+                y = y + line_height
+            end
+            
+            -- Сохраняем ссылку
+            links[link_id] = {
+                href = href,
+                text = clean_text,
+                start_line = start
+            }
+            
+            return clean_text
         end)
-    end
-    return str
-end
-
--- Декодировка URL
-function Browser.urlDecode(str)
-    str = string.gsub(str, '%%(%x%x)', function(hex)
-        return string.char(tonumber(hex, 16))
-    end)
-    return str
-end
-
--- Извлечение базового URL
-function Browser.getBaseUrl(url)
-    if string.find(url, "://") then
-        local protocol, rest = string.match(url, "^(.-)://(.+)$")
-        local host = string.match(rest, "^([^/]+)")
-        if host then
-            return protocol .. "://" .. host
-        end
-    end
-    return ""
-end
-
--- Парсинг относительных ссылок
-function Browser.resolveUrl(base, relative)
-    if string.find(relative, "://") then
-        return relative -- абсолютная ссылка
-    end
     
-    if string.sub(relative, 1, 2) == "//" then
-        return "http:" .. relative
-    end
+    -- Удаляем все остальные теги
+    html = html:gsub("<[^>]+>", "")
     
-    if string.sub(relative, 1, 1) == "/" then
-        local protocol, host = string.match(base, "^(.-://[^/]+)")
-        if protocol and host then
-            return protocol .. host .. relative
+    -- Разбиваем на строки
+    for line in html:gmatch("[^\r\n]+") do
+        line = line:trim()
+        if line ~= "" then
+            -- Разбиваем длинные строки
+            local max_len = 45  -- Примерно 45 символов на строку
+            while #line > max_len do
+                local space_pos = line:sub(1, max_len):find("%s[^%s]*$")
+                if space_pos then
+                    local part = line:sub(1, space_pos):trim()
+                    table.insert(lines, {text = part, type = "text", y = y})
+                    y = y + line_height
+                    line = line:sub(space_pos + 1):trim()
+                else
+                    break
+                end
+            end
+            
+            if line ~= "" and #line > 0 then
+                table.insert(lines, {text = line, type = "text", y = y})
+                y = y + line_height
+            end
         end
     end
     
-    -- Относительная ссылка
-    local basePath = string.match(base, "^(.-/)[^/]*$") or ""
-    return basePath .. relative
+    return {
+        lines = lines,
+        links = links,
+        total_height = y + padding
+    }
 end
 
 -- Загрузка страницы
-function Browser.loadPage(url, forceReload)
-    if Browser.loading then return end
-    
-    url = Browser.urlEncode(url)
-    if not string.find(url, "://") then
-        url = "http://" .. url
+function loadPage(url)
+    if not url or url == "" then
+        state.status = "Empty URL"
+        return false
     end
     
-    Browser.url = url
-    Browser.baseUrl = Browser.getBaseUrl(url)
-    Browser.loading = true
-    Browser.scrollY = 0
-    Browser.links = {}
-    Browser.images = {}
-    
-    -- Проверка кэша
-    if not forceReload and Browser.cache[url] then
-        Browser.content = Browser.cache[url]
-        Browser.parseContent()
-        Browser.loading = false
-        return
+    -- Добавляем протокол если нужно
+    if not string.starts(url, "http://") and not string.starts(url, "https://") then
+        url = "https://" .. url
     end
     
-    -- Загрузка
-    local result = net.get(url)
+    state.loading = true
+    state.status = "Loading..."
+    state.page.url = url
+    state.page.title = "Loading..."
+    state.page.scroll_y = 0
+    
+    -- Показываем обновление UI
+    draw()
+    ui.flush()
+    
+    -- Загружаем страницу
+    local encoded_url = encodeURL(url)
+    local result = net.get(encoded_url)
     
     if result and result.ok and result.body then
-        Browser.content = result.body
-        Browser.cache[url] = result.body
-        Browser.parseContent()
+        -- Парсим HTML
+        local parsed = parseHTML(result.body)
         
-        -- Добавление в историю
-        if Browser.history[Browser.historyIndex] ~= url then
-            table.insert(Browser.history, url)
-            Browser.historyIndex = #Browser.history
+        -- Обновляем состояние
+        state.page.content = parsed.lines
+        state.page.links = parsed.links
+        state.page.total_height = parsed.total_height
+        state.page.title = url
+        
+        -- Извлекаем заголовок если есть
+        local title = result.body:match("<title>(.-)</title>")
+        if title and title:trim() ~= "" then
+            state.page.title = title:trim():gsub("<[^>]+>", "")
+            if #state.page.title > 30 then
+                state.page.title = state.page.title:sub(1, 27) .. "..."
+            end
         end
+        
+        -- Сохраняем в историю
+        table.insert(state.history, {
+            url = url,
+            title = state.page.title,
+            time = hw.getTime()
+        })
+        state.history_index = #state.history
+        
+        state.status = "Loaded"
+        state.last_load_time = hw.millis()
+        state.loading = false
+        return true
     else
-        Browser.content = "<h1>Error loading page</h1>"
+        state.status = "Failed to load"
         if result and result.err then
-            Browser.content = Browser.content .. "<p>" .. result.err .. "</p>"
+            state.status = state.status .. ": " .. result.err
         end
-    end
-    
-    Browser.loading = false
-end
-
--- Простой парсер HTML (только базовые теги)
-function Browser.parseContent()
-    -- Удаляем скрипты и стили
-    local content = string.gsub(Browser.content, "<script[^>]*>.-</script>", "")
-    content = string.gsub(content, "<style[^>]*>.-</style>", "")
-    content = string.gsub(content, "<noscript[^>]*>.-</noscript>", "")
-    
-    -- Заменяем теги на простые аналоги
-    content = string.gsub(content, "<br%s*/?>", "\n")
-    content = string.gsub(content, "<p[^>]*>", "\n")
-    content = string.gsub(content, "</p>", "\n\n")
-    content = string.gsub(content, "<div[^>]*>", "\n")
-    content = string.gsub(content, "</div>", "\n")
-    content = string.gsub(content, "<h1[^>]*>", "\n\n=== ")
-    content = string.gsub(content, "</h1>", " ===\n\n")
-    content = string.gsub(content, "<h2[^>]*>", "\n\n== ")
-    content = string.gsub(content, "</h2>", " ==\n\n")
-    content = string.gsub(content, "<h3[^>]*>", "\n\n= ")
-    content = string.gsub(content, "</h3>", " =\n\n")
-    content = string.gsub(content, "<li[^>]*>", " • ")
-    content = string.gsub(content, "</li>", "\n")
-    content = string.gsub(content, "<ul[^>]*>", "\n")
-    content = string.gsub(content, "</ul>", "\n")
-    content = string.gsub(content, "<ol[^>]*>", "\n")
-    content = string.gsub(content, "</ol>", "\n")
-    
-    -- Извлекаем ссылки
-    local linkIndex = 1
-    for link, text in string.gmatch(content, '<a[^>]*href="([^"]*)"[^>]*>([^<]*)</a>') do
-        if link and text and link ~= "" then
-            local fullUrl = Browser.resolveUrl(Browser.url, Browser.urlDecode(link))
-            Browser.links[linkIndex] = {url = fullUrl, text = text}
-            content = string.gsub(content, '<a[^>]*href="' .. link:gsub("([%%%[%]%^%$%*%+%-%?%.%(%)])", "%%%1") .. '"[^>]*>' .. text:gsub("([%%%[%]%^%$%*%+%-%?%.%(%)])", "%%%1") .. '</a>', 
-                "[" .. linkIndex .. "]")
-            linkIndex = linkIndex + 1
-        end
-    end
-    
-    -- Извлекаем изображения
-    local imgIndex = 1
-    for img in string.gmatch(content, '<img[^>]*src="([^"]*)"') do
-        if img and img ~= "" then
-            local fullUrl = Browser.resolveUrl(Browser.url, Browser.urlDecode(img))
-            Browser.images[imgIndex] = {url = fullUrl, loaded = false, data = nil}
-            content = string.gsub(content, '<img[^>]*src="' .. img:gsub("([%%%[%]%^%$%*%+%-%?%.%(%)])", "%%%1") .. '"[^>]*>', 
-                "\n[Image " .. imgIndex .. "]\n")
-            imgIndex = imgIndex + 1
-        end
-    end
-    
-    -- Удаляем остальные HTML теги
-    content = string.gsub(content, "<[^>]+>", "")
-    
-    -- Заменяем HTML сущности
-    content = string.gsub(content, "&lt;", "<")
-    content = string.gsub(content, "&gt;", ">")
-    content = string.gsub(content, "&amp;", "&")
-    content = string.gsub(content, "&quot;", "\"")
-    content = string.gsub(content, "&#(%d+);", function(n)
-        return string.char(tonumber(n))
-    end)
-    
-    Browser.content = content
-end
-
--- Загрузка изображения
-function Browser.loadImage(index)
-    if not Browser.images[index] or Browser.images[index].loaded then
-        return
-    end
-    
-    local img = Browser.images[index]
-    local url = img.url
-    
-    -- Скачиваем во временный файл
-    local tempFile = "/temp_img.jpg"
-    
-    local function downloadCallback(loaded, total)
-        -- Можно добавить индикатор загрузки
-    end
-    
-    local success = net.download(url, tempFile, "flash", downloadCallback)
-    
-    if success then
-        img.loaded = true
-        img.data = tempFile
+        state.loading = false
+        return false
     end
 end
 
--- Функция для безопасного переноса строк
-function Browser.wrapText(text, maxChars)
-    local lines = {}
-    local words = {}
-    
-    -- Разбиваем на слова
-    for word in string.gmatch(text, "%S+") do
-        table.insert(words, word)
+-- Навигация назад/вперед
+function goBack()
+    if state.history_index > 1 then
+        state.history_index = state.history_index - 1
+        local hist = state.history[state.history_index]
+        loadPage(hist.url)
     end
+end
+
+function goForward()
+    if state.history_index < #state.history then
+        state.history_index = state.history_index + 1
+        local hist = state.history[state.history_index]
+        loadPage(hist.url)
+    end
+end
+
+-- Обработка клика по ссылке
+function handleLinkClick(x, y)
+    local screen_y = y - HEADER_H + state.page.scroll_y
     
-    local currentLine = ""
-    for i, word in ipairs(words) do
-        if #currentLine + #word + 1 <= maxChars then
-            if currentLine ~= "" then
-                currentLine = currentLine .. " " .. word
-            else
-                currentLine = word
-            end
-        else
-            if currentLine ~= "" then
-                table.insert(lines, currentLine)
-            end
-            if #word > maxChars then
-                -- Разбиваем очень длинное слово
-                while #word > maxChars do
-                    table.insert(lines, string.sub(word, 1, maxChars))
-                    word = string.sub(word, maxChars + 1)
+    for _, line in ipairs(state.page.content) do
+        if line.type == "link" and screen_y >= line.y and screen_y <= line.y + 20 then
+            local link = state.page.links[line.link_id]
+            if link then
+                local href = link.href
+                
+                -- Обработка относительных URL
+                if not string.starts(href, "http://") and not string.starts(href, "https://") then
+                    if string.starts(href, "/") then
+                        -- Абсолютный путь относительно домена
+                        local domain = state.page.url:match("https?://[^/]+")
+                        if domain then
+                            href = domain .. href
+                        end
+                    else
+                        -- Относительный путь
+                        local base = state.page.url:match("(.+)/[^/]*$")
+                        if base then
+                            href = base .. "/" .. href
+                        end
+                    end
                 end
-                if #word > 0 then
-                    currentLine = word
-                else
-                    currentLine = ""
-                end
-            else
-                currentLine = word
+                
+                loadPage(href)
+                return true
             end
         end
     end
     
-    if currentLine ~= "" then
-        table.insert(lines, currentLine)
-    end
-    
-    return lines
+    return false
 end
 
--- Отрисовка страницы
-function Browser.drawPage()
-    local scrollY = Browser.scrollY
-    local x, y = 10, 50 - scrollY
-    local lineHeight = 20
-    local maxChars = math.floor((Browser.screenW - 20) / 6) -- 6 пикселей на символ
-    
+-- Отрисовка интерфейса
+function draw()
     -- Фон
-    ui.rect(0, 0, Browser.screenW, Browser.screenH, 0x0000)
+    ui.rect(0, 0, SCR_W, SCR_H, 0)
     
-    -- Панель URL
-    ui.rect(0, 0, Browser.screenW, 40, 0x2104)
+    -- Заголовок
+    ui.rect(0, 0, SCR_W, HEADER_H, 1024)
+    ui.text(10, 10, "LuaBrowser", 2, 65535)
     
-    -- Обрезаем URL если слишком длинный
-    local displayUrl = Browser.url
-    if #displayUrl > 50 then
-        displayUrl = "..." .. string.sub(displayUrl, #displayUrl - 47)
-    end
-    ui.text(5, 12, displayUrl, 1, 0xFFFF)
-    
-    if Browser.loading then
-        ui.text(Browser.screenW - 60, 12, "Loading...", 1, 0x07E0)
+    -- Статус загрузки
+    if state.loading then
+        ui.text(SCR_W - 100, 10, state.status, 1, 65535)
     else
-        ui.text(Browser.screenW - 60, 12, "Ready", 1, 0xF800)
+        local time_str = ""
+        if state.last_load_time > 0 then
+            local sec = math.floor((hw.millis() - state.last_load_time) / 1000)
+            if sec < 60 then
+                time_str = sec .. "s ago"
+            else
+                time_str = math.floor(sec/60) .. "m ago"
+            end
+        end
+        ui.text(SCR_W - 80, 10, time_str, 1, 2016)
     end
     
     -- Кнопки навигации
-    if ui.button(5, 45, 50, 30, "Back", 0x2104) then
-        Browser.goBack()
+    if ui.button(SCR_W - 90, HEADER_H + 5, 40, 30, "<", 8452) then
+        goBack()
     end
     
-    if ui.button(60, 45, 50, 30, "Reload", 0x2104) then
-        Browser.loadPage(Browser.url, true)
+    if ui.button(SCR_W - 45, HEADER_H + 5, 40, 30, ">", 8452) then
+        goForward()
     end
     
-    -- Поле ввода URL
-    local inputX = 115
-    if ui.input(inputX, 45, 200, 30, Browser.url, true) then
+    -- Поле ввода/отображения URL
+    if state.input_mode then
         -- Режим редактирования URL
-        local newUrl = Browser.showKeyboard("Enter URL:", Browser.url)
-        if newUrl and newUrl ~= "" then
-            Browser.loadPage(newUrl)
+        ui.rect(5, HEADER_H + 5, SCR_W - 100, 30, 65535)
+        ui.text(10, HEADER_H + 10, state.url_input, 2, 0)
+        
+        -- Кнопка GO
+        if ui.button(SCR_W - 95, HEADER_H + 5, 90, 30, "GO", 2048) then
+            loadPage(state.url_input)
+            state.input_mode = false
+        end
+    else
+        -- Отображение текущего URL
+        local display_url = state.page.url
+        if #display_url > 40 then
+            display_url = display_url:sub(1, 17) .. "..." .. display_url:sub(-20)
+        end
+        
+        if ui.button(5, HEADER_H + 5, SCR_W - 100, 30, display_url, 8452) then
+            state.input_mode = true
+            state.url_input = state.page.url
         end
     end
     
-    -- Кнопка Go
-    if ui.button(320, 45, 85, 30, "Go", 0x001F) then
-        Browser.loadPage(Browser.url)
-    end
+    -- Область контента
+    ui.pushClip(0, HEADER_H + 40, SCR_W, CONTENT_H)
     
-    -- Контент
-    y = 85 - scrollY
+    -- Заголовок страницы
+    ui.text(10, HEADER_H + 40 - state.page.scroll_y, state.page.title, 2, 2016)
     
-    -- Разбиваем текст на строки с переносами
-    local lines = {}
-    for line in string.gmatch(Browser.content .. "\n", "(.-)\n") do
-        local wrapped = Browser.wrapText(line, maxChars)
-        for _, wrappedLine in ipairs(wrapped) do
-            table.insert(lines, wrappedLine)
-        end
-        table.insert(lines, "") -- пустая строка между абзацами
-    end
-    
-    -- Отрисовка текста
-    for i, line in ipairs(lines) do
-        if y >= -lineHeight and y < Browser.screenH then
-            -- Проверяем ссылки [1], [2], etc
-            local linkNum = string.match(line, "%[(%d+)%]")
-            if linkNum then
-                linkNum = tonumber(linkNum)
-                if Browser.links[linkNum] then
-                    -- Ограничиваем длину текста ссылки
-                    local displayText = Browser.links[linkNum].text
-                    if #displayText > maxChars then
-                        displayText = string.sub(displayText, 1, maxChars - 3) .. "..."
-                    end
-                    
-                    ui.text(x, y, displayText, 1, 0x07E0)
-                    
-                    -- Проверка клика
-                    local tx, ty = ui.getTouch().x, ui.getTouch().y
-                    if tx >= x and tx <= x + #displayText * 6 and
-                       ty >= y and ty <= y + lineHeight and ui.getTouch().released then
-                        Browser.loadPage(Browser.links[linkNum].url)
-                        return -- Выходим из функции, чтобы избежать ошибок после перехода
-                    end
-                else
-                    ui.text(x, y, line, 1, 0xFFFF)
-                end
-            -- Проверяем изображения
-            elseif string.match(line, "^%[Image (%d+)%]$") then
-                local imgNum = tonumber(string.match(line, "^%[Image (%d+)%]$"))
-                if Browser.images[imgNum] then
-                    if not Browser.images[imgNum].loaded then
-                        ui.text(x, y, "[Loading image...]", 1, 0xF800)
-                        Browser.loadImage(imgNum)
-                    else
-                        -- Пытаемся отобразить изображение
-                        if ui.drawJPEG(x, y, Browser.images[imgNum].data) then
-                            y = y + 100  -- Пропускаем место под изображение
-                        else
-                            ui.text(x, y, "[Image failed to load]", 1, 0xF800)
-                        end
-                    end
-                else
-                    ui.text(x, y, line, 1, 0xFFFF)
-                end
+    -- Контент страницы
+    local content_start_y = HEADER_H + 70
+    for _, line in ipairs(state.page.content) do
+        local line_y = content_start_y + line.y - state.page.scroll_y
+        
+        -- Проверяем, видима ли строка
+        if line_y >= HEADER_H + 40 and line_y <= SCR_H - FOOTER_H then
+            if line.type == "link" then
+                -- Ссылка (синий подчеркнутый текст)
+                ui.text(10, line_y, line.text, 2, 31)  -- Синий цвет
+                -- Подчеркивание
+                ui.rect(10, line_y + 16, #line.text * 12, 1, 31)
             else
-                ui.text(x, y, line, 1, 0xFFFF)
+                -- Обычный текст
+                ui.text(10, line_y, line.text, 2, 65535)
             end
         end
-        y = y + lineHeight
+    end
+    
+    -- Индикатор скролла
+    if state.page.total_height > CONTENT_H then
+        local scroll_height = math.max(20, (CONTENT_H / state.page.total_height) * CONTENT_H)
+        local scroll_pos = (state.page.scroll_y / (state.page.total_height - CONTENT_H)) * (CONTENT_H - scroll_height)
         
-        -- Прерываем если вышли за пределы экрана
-        if y > Browser.screenH + scrollY + 100 then
-            break
-        end
+        ui.rect(SCR_W - 5, HEADER_H + 40 + scroll_pos, 5, scroll_height, 63488)
     end
     
-    -- Полоса прокрутки
-    local contentHeight = #lines * lineHeight
-    if contentHeight > Browser.screenH - 85 then
-        local scrollHeight = math.max(10, (Browser.screenH - 85) * (Browser.screenH - 85) / contentHeight)
-        local scrollPos = (Browser.screenH - 85 - scrollHeight) * scrollY / math.max(1, contentHeight - (Browser.screenH - 85))
-        
-        ui.rect(Browser.screenW - 5, 85, 5, Browser.screenH - 85, 0x4208)
-        ui.rect(Browser.screenW - 5, 85 + scrollPos, 5, scrollHeight, 0x7BEF)
+    ui.popClip()
+    
+    -- Панель внизу (статус)
+    ui.rect(0, SCR_H - FOOTER_H, SCR_W, FOOTER_H, 1024)
+    
+    -- Статус
+    ui.text(10, SCR_H - FOOTER_H + 10, state.status, 1, 65535)
+    
+    -- Информация о странице
+    local info = #state.page.content .. " lines"
+    if #state.page.content > 0 then
+        info = info .. ", " .. #state.page.links .. " links"
     end
-    
-    -- Прокрутка касанием
-    local tx, ty = ui.getTouch().x, ui.getTouch().y
-    local touching = ui.getTouch().touching
-    
-    if touching then
-        if Browser.lastTouchY ~= 0 then
-            local delta = ty - Browser.lastTouchY
-            Browser.scrollY = Browser.scrollY - delta
-        end
-        Browser.lastTouchY = ty
-    else
-        Browser.lastTouchY = 0
-    end
-    
-    -- Ограничение прокрутки
-    local maxScroll = math.max(0, contentHeight - (Browser.screenH - 85))
-    if Browser.scrollY < 0 then Browser.scrollY = 0 end
-    if Browser.scrollY > maxScroll then Browser.scrollY = maxScroll end
+    ui.text(SCR_W - 150, SCR_H - FOOTER_H + 10, info, 1, 2016)
     
     -- Кнопки внизу
-    if ui.button(5, Browser.screenH - 35, 100, 30, "Home", 0x2104) then
-        Browser.loadPage("http://www.google.com")
+    if ui.button(SCR_W - 90, SCR_H - 35, 40, 30, "↺", 2048) then
+        -- Перезагрузка страницы
+        if state.page.url ~= "" then
+            loadPage(state.page.url)
+        end
     end
     
-    if ui.button(110, Browser.screenH - 35, 100, 30, "History", 0x2104) then
-        Browser.showHistory()
-    end
-    
-    if ui.button(215, Browser.screenH - 35, 100, 30, "Bookmarks", 0x2104) then
-        Browser.showBookmarks()
-    end
-    
-    if ui.button(320, Browser.screenH - 35, 85, 30, "Clear Cache", 0x001F) then
-        Browser.cache = {}
-        ui.unloadAll()
-        fs.remove("/temp_img.jpg")
+    if ui.button(SCR_W - 45, SCR_H - 35, 40, 30, "+", 8452) then
+        -- Новая вкладка (сброс)
+        state.page = {
+            url = "",
+            title = "New Tab",
+            content = {},
+            links = {},
+            scroll_y = 0,
+            total_height = 0
+        }
+        state.input_mode = true
+        state.url_input = "https://example.com"
     end
 end
 
--- Клавиатура для ввода
-function Browser.showKeyboard(title, default)
-    local input = default or ""
-    local active = true
+-- Основной цикл приложения
+function mainLoop()
+    -- Переменные для скроллинга
+    local scroll_start_y = 0
+    local scroll_start_scroll = 0
+    local is_scrolling = false
     
-    -- Раскладка клавиатуры для URL
-    local keys = {
-        "q", "w", "e", "r", "t", "y", "u", "i", "o", "p",
-        "a", "s", "d", "f", "g", "h", "j", "k", "l",
-        "z", "x", "c", "v", "b", "n", "m",
-        ".", "/", ":", "-", "_", "=",
-        "BACK", "SPACE", "ENTER"
-    }
+    -- Загружаем стартовую страницу
+    loadPage("https://example.com")
     
-    while active do
-        -- Фон
-        ui.rect(0, 0, Browser.screenW, Browser.screenH, 0x0000)
-        ui.rect(0, 0, Browser.screenW, 40, 0x2104)
-        ui.text(10, 12, title, 1, 0xFFFF)
-        
-        -- Показываем ввод (обрезаем если слишком длинный)
-        local displayInput = input
-        if #displayInput > 60 then
-            displayInput = "..." .. string.sub(displayInput, #displayInput - 57)
-        end
-        ui.text(10, 50, displayInput, 2, 0xFFFF)
-        
-        -- Клавиши
-        local keyW = 35
-        local keyH = 35
-        local startX = 10
-        local startY = 100
-        
-        for i, key in ipairs(keys) do
-            local row = math.floor((i-1) / 10)
-            local col = (i-1) % 10
-            
-            -- Корректировка для разных рядов
-            if row == 1 then col = col + 1 end  -- второй ряд смещен
-            if row == 2 then col = col + 2 end  -- третий ряд смещен больше
-            
-            local x = startX + col * (keyW + 5)
-            local y = startY + row * (keyH + 5)
-            
-            if key == "BACK" then
-                x = 10
-                y = startY + 4 * (keyH + 5)
-                keyW = 80
-                if ui.button(x, y, keyW, keyH, key, 0xF800) then
-                    input = string.sub(input, 1, -2)
-                end
-            elseif key == "SPACE" then
-                x = 95
-                y = startY + 4 * (keyH + 5)
-                keyW = 120
-                if ui.button(x, y, keyW, keyH, key, 0x2104) then
-                    input = input .. " "
-                end
-            elseif key == "ENTER" then
-                x = 220
-                y = startY + 4 * (keyH + 5)
-                keyW = 80
-                if ui.button(x, y, keyW, keyH, key, 0x07E0) then
-                    active = false
-                    return input
-                end
-            else
-                if ui.button(x, y, keyW, keyH, key, 0x2104) then
-                    input = input .. key
-                end
-            end
-        end
-        
-        -- Кнопка Cancel
-        if ui.button(305, startY + 4 * (keyH + 5), 95, keyH, "CANCEL", 0x001F) then
-            active = false
-            return nil
-        end
-        
-        ui.flush()
-    end
-    
-    return input
-end
-
--- История посещений
-function Browser.showHistory()
-    local scrollY = 0
-    local active = true
-    
-    while active do
-        ui.rect(0, 0, Browser.screenW, Browser.screenH, 0x0000)
-        ui.rect(0, 0, Browser.screenW, 40, 0x2104)
-        ui.text(10, 12, "History", 2, 0xFFFF)
-        
-        scrollY = ui.beginList(0, 40, Browser.screenW, Browser.screenH - 40, scrollY, #Browser.history * 30)
-        
-        for i, url in ipairs(Browser.history) do
-            local y = (i-1) * 30
-            ui.rect(5, y, Browser.screenW - 10, 28, 0x2104)
-            
-            -- Обрезаем URL для отображения
-            local displayUrl = url
-            if #displayUrl > 50 then
-                displayUrl = string.sub(displayUrl, 1, 47) .. "..."
-            end
-            ui.text(10, y + 5, displayUrl, 1, 0xFFFF)
-            
-            -- Клик по истории
-            local tx, ty = ui.getTouch().x, ui.getTouch().y
-            if tx >= 5 and tx <= Browser.screenW - 5 and
-               ty >= 40 + y - scrollY and ty <= 40 + y + 28 - scrollY and
-               ui.getTouch().released then
-                Browser.loadPage(url)
-                active = false
-                return
-            end
-        end
-        
-        ui.endList()
-        
-        -- Кнопка закрытия
-        if ui.button(10, Browser.screenH - 40, Browser.screenW - 20, 30, "Close", 0x001F) then
-            active = false
-        end
-        
-        ui.flush()
-    end
-end
-
--- Закладки
-function Browser.showBookmarks()
-    local bookmarks = {
-        {name = "Google", url = "http://www.google.com"},
-        {name = "Wikipedia", url = "http://www.wikipedia.org"},
-        {name = "GitHub", url = "http://www.github.com"},
-        {name = "Reddit", url = "http://www.reddit.com"},
-        {name = "Hacker News", url = "http://news.ycombinator.com"},
-        {name = "DuckDuckGo", url = "http://duckduckgo.com"},
-        {name = "Archive.org", url = "http://archive.org"},
-        {name = "Project Gutenberg", url = "http://www.gutenberg.org"}
-    }
-    
-    local scrollY = 0
-    local active = true
-    
-    while active do
-        ui.rect(0, 0, Browser.screenW, Browser.screenH, 0x0000)
-        ui.rect(0, 0, Browser.screenW, 40, 0x2104)
-        ui.text(10, 12, "Bookmarks", 2, 0xFFFF)
-        
-        scrollY = ui.beginList(0, 40, Browser.screenW, Browser.screenH - 80, scrollY, #bookmarks * 40)
-        
-        for i, bm in ipairs(bookmarks) do
-            local y = (i-1) * 40
-            ui.rect(5, y, Browser.screenW - 10, 38, 0x2104)
-            ui.text(10, y + 5, bm.name, 1, 0xFFFF)
-            
-            -- Обрезаем URL для отображения
-            local displayUrl = bm.url
-            if #displayUrl > 45 then
-                displayUrl = string.sub(displayUrl, 1, 42) .. "..."
-            end
-            ui.text(10, y + 20, displayUrl, 1, 0x7BEF)
-            
-            -- Клик по закладке
-            local tx, ty = ui.getTouch().x, ui.getTouch().y
-            if tx >= 5 and tx <= Browser.screenW - 5 and
-               ty >= 40 + y - scrollY and ty <= 40 + y + 38 - scrollY and
-               ui.getTouch().released then
-                Browser.loadPage(bm.url)
-                active = false
-                return
-            end
-        end
-        
-        ui.endList()
-        
-        -- Кнопки
-        if ui.button(10, Browser.screenH - 75, Browser.screenW - 20, 30, "Add Current", 0x07E0) then
-            -- Здесь можно добавить текущую страницу в закладки
-            local name = Browser.url
-            if #name > 20 then
-                name = string.sub(name, 1, 17) .. "..."
-            end
-            table.insert(bookmarks, {name = name, url = Browser.url})
-        end
-        
-        if ui.button(10, Browser.screenH - 40, Browser.screenW - 20, 30, "Close", 0x001F) then
-            active = false
-        end
-        
-        ui.flush()
-    end
-end
-
--- Навигация назад
-function Browser.goBack()
-    if Browser.historyIndex > 1 then
-        Browser.historyIndex = Browser.historyIndex - 1
-        Browser.loadPage(Browser.history[Browser.historyIndex], true)
-    end
-end
-
--- Навигация вперед
-function Browser.goForward()
-    if Browser.historyIndex < #Browser.history then
-        Browser.historyIndex = Browser.historyIndex + 1
-        Browser.loadPage(Browser.history[Browser.historyIndex], true)
-    end
-end
-
--- Главная функция браузера
-function Browser.run()
-    -- Начальная страница
-    if Browser.url == "" then
-        Browser.loadPage("www.google.com")
-    end
-    
-    -- Главный цикл
     while true do
-        Browser.drawPage()
+        -- Получаем состояние тача
+        local touch = ui.getTouch()
+        
+        if touch.touching then
+            -- Скроллинг контента
+            if not state.input_mode and touch.y > HEADER_H + 40 and touch.y < SCR_H - FOOTER_H then
+                if not is_scrolling then
+                    scroll_start_y = touch.y
+                    scroll_start_scroll = state.page.scroll_y
+                    is_scrolling = true
+                else
+                    local delta = scroll_start_y - touch.y
+                    local new_scroll = scroll_start_scroll + delta
+                    
+                    -- Ограничиваем скролл
+                    local max_scroll = math.max(0, state.page.total_height - CONTENT_H + 50)
+                    if new_scroll < 0 then
+                        state.page.scroll_y = 0
+                    elseif new_scroll > max_scroll then
+                        state.page.scroll_y = max_scroll
+                    else
+                        state.page.scroll_y = new_scroll
+                    end
+                end
+            end
+        else
+            -- Обработка клика при отпускании
+            if is_scrolling then
+                is_scrolling = false
+            elseif not state.input_mode and touch.y > HEADER_H + 40 and touch.y < SCR_H - FOOTER_H then
+                -- Проверяем клик по ссылке
+                handleLinkClick(touch.x, touch.y)
+            end
+        end
+        
+        -- Отрисовка
+        draw()
         ui.flush()
+        
+        -- Небольшая задержка для стабильности
+        local time = hw.getTime()
+        local delay_ms = 33  -- ~30 FPS
+        hw.millis()
     end
 end
 
--- Запуск браузера при старте
-Browser.run()
+-- Запуск браузера
+mainLoop()
