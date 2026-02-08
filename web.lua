@@ -24,7 +24,7 @@ local settings = {
 }
 
 -- Начальная страница
-local homepage = "https://raw.githubusercontent.com/kptmx/luawatch/main/README.md"
+local homepage = "https://furtails.pw"
 
 -- Цвета
 local colors = {
