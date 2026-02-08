@@ -14,7 +14,8 @@ local Browser = {
     baseUrl = "",
     screenW = 410,
     screenH = 502,
-    zoom = 1.0
+    zoom = 1.0,
+    lastTouchY = 0
 }
 
 -- Кодировка URL
@@ -205,19 +206,71 @@ function Browser.loadImage(index)
     end
 end
 
+-- Функция для безопасного переноса строк
+function Browser.wrapText(text, maxChars)
+    local lines = {}
+    local words = {}
+    
+    -- Разбиваем на слова
+    for word in string.gmatch(text, "%S+") do
+        table.insert(words, word)
+    end
+    
+    local currentLine = ""
+    for i, word in ipairs(words) do
+        if #currentLine + #word + 1 <= maxChars then
+            if currentLine ~= "" then
+                currentLine = currentLine .. " " .. word
+            else
+                currentLine = word
+            end
+        else
+            if currentLine ~= "" then
+                table.insert(lines, currentLine)
+            end
+            if #word > maxChars then
+                -- Разбиваем очень длинное слово
+                while #word > maxChars do
+                    table.insert(lines, string.sub(word, 1, maxChars))
+                    word = string.sub(word, maxChars + 1)
+                end
+                if #word > 0 then
+                    currentLine = word
+                else
+                    currentLine = ""
+                end
+            else
+                currentLine = word
+            end
+        end
+    end
+    
+    if currentLine ~= "" then
+        table.insert(lines, currentLine)
+    end
+    
+    return lines
+end
+
 -- Отрисовка страницы
 function Browser.drawPage()
     local scrollY = Browser.scrollY
     local x, y = 10, 50 - scrollY
     local lineHeight = 20
-    local maxWidth = Browser.screenW - 20
+    local maxChars = math.floor((Browser.screenW - 20) / 6) -- 6 пикселей на символ
     
     -- Фон
     ui.rect(0, 0, Browser.screenW, Browser.screenH, 0x0000)
     
     -- Панель URL
     ui.rect(0, 0, Browser.screenW, 40, 0x2104)
-    ui.text(5, 12, Browser.url:sub(1, 50), 1, 0xFFFF)
+    
+    -- Обрезаем URL если слишком длинный
+    local displayUrl = Browser.url
+    if #displayUrl > 50 then
+        displayUrl = "..." .. string.sub(displayUrl, #displayUrl - 47)
+    end
+    ui.text(5, 12, displayUrl, 1, 0xFFFF)
     
     if Browser.loading then
         ui.text(Browser.screenW - 60, 12, "Loading...", 1, 0x07E0)
@@ -252,31 +305,12 @@ function Browser.drawPage()
     -- Контент
     y = 85 - scrollY
     
-    -- Разбиваем текст на строки
+    -- Разбиваем текст на строки с переносами
     local lines = {}
     for line in string.gmatch(Browser.content .. "\n", "(.-)\n") do
-        -- Обрабатываем переносы строк
-        local tempLine = line
-        while #tempLine > 0 do
-            if #tempLine <= maxWidth / 8 then
-                table.insert(lines, tempLine)
-                tempLine = ""
-            else
-                -- Ищем место для переноса
-                local breakPos = maxWidth / 8
-                for i = breakPos, 1, -1 do
-                    if string.sub(tempLine, i, i) == " " then
-                        table.insert(lines, string.sub(tempLine, 1, i-1))
-                        tempLine = string.sub(tempLine, i+1)
-                        break
-                    end
-                    if i == 1 then
-                        -- Принудительный перенос
-                        table.insert(lines, string.sub(tempLine, 1, breakPos))
-                        tempLine = string.sub(tempLine, breakPos+1)
-                    end
-                end
-            end
+        local wrapped = Browser.wrapText(line, maxChars)
+        for _, wrappedLine in ipairs(wrapped) do
+            table.insert(lines, wrappedLine)
         end
         table.insert(lines, "") -- пустая строка между абзацами
     end
@@ -289,13 +323,20 @@ function Browser.drawPage()
             if linkNum then
                 linkNum = tonumber(linkNum)
                 if Browser.links[linkNum] then
-                    ui.text(x, y, Browser.links[linkNum].text, 1, 0x07E0)
+                    -- Ограничиваем длину текста ссылки
+                    local displayText = Browser.links[linkNum].text
+                    if #displayText > maxChars then
+                        displayText = string.sub(displayText, 1, maxChars - 3) .. "..."
+                    end
+                    
+                    ui.text(x, y, displayText, 1, 0x07E0)
                     
                     -- Проверка клика
                     local tx, ty = ui.getTouch().x, ui.getTouch().y
-                    if tx >= x and tx <= x + #Browser.links[linkNum].text * 6 and
+                    if tx >= x and tx <= x + #displayText * 6 and
                        ty >= y and ty <= y + lineHeight and ui.getTouch().released then
                         Browser.loadPage(Browser.links[linkNum].url)
+                        return -- Выходим из функции, чтобы избежать ошибок после перехода
                     end
                 else
                     ui.text(x, y, line, 1, 0xFFFF)
@@ -333,8 +374,8 @@ function Browser.drawPage()
     -- Полоса прокрутки
     local contentHeight = #lines * lineHeight
     if contentHeight > Browser.screenH - 85 then
-        local scrollHeight = (Browser.screenH - 85) * (Browser.screenH - 85) / contentHeight
-        local scrollPos = (Browser.screenH - 85 - scrollHeight) * scrollY / (contentHeight - (Browser.screenH - 85))
+        local scrollHeight = math.max(10, (Browser.screenH - 85) * (Browser.screenH - 85) / contentHeight)
+        local scrollPos = (Browser.screenH - 85 - scrollHeight) * scrollY / math.max(1, contentHeight - (Browser.screenH - 85))
         
         ui.rect(Browser.screenW - 5, 85, 5, Browser.screenH - 85, 0x4208)
         ui.rect(Browser.screenW - 5, 85 + scrollPos, 5, scrollHeight, 0x7BEF)
@@ -342,12 +383,17 @@ function Browser.drawPage()
     
     -- Прокрутка касанием
     local tx, ty = ui.getTouch().x, ui.getTouch().y
-    if tx >= 0 and tx < Browser.screenW - 10 and ty >= 85 and ty < Browser.screenH then
-        if ui.getTouch().touching then
-            Browser.scrollY = Browser.scrollY - (ty - (Browser.lastTouchY or ty))
+    local touching = ui.getTouch().touching
+    
+    if touching then
+        if Browser.lastTouchY ~= 0 then
+            local delta = ty - Browser.lastTouchY
+            Browser.scrollY = Browser.scrollY - delta
         end
+        Browser.lastTouchY = ty
+    else
+        Browser.lastTouchY = 0
     end
-    Browser.lastTouchY = ty
     
     -- Ограничение прокрутки
     local maxScroll = math.max(0, contentHeight - (Browser.screenH - 85))
@@ -393,7 +439,13 @@ function Browser.showKeyboard(title, default)
         ui.rect(0, 0, Browser.screenW, Browser.screenH, 0x0000)
         ui.rect(0, 0, Browser.screenW, 40, 0x2104)
         ui.text(10, 12, title, 1, 0xFFFF)
-        ui.text(10, 50, input, 2, 0xFFFF)
+        
+        -- Показываем ввод (обрезаем если слишком длинный)
+        local displayInput = input
+        if #displayInput > 60 then
+            displayInput = "..." .. string.sub(displayInput, #displayInput - 57)
+        end
+        ui.text(10, 50, displayInput, 2, 0xFFFF)
         
         -- Клавиши
         local keyW = 35
@@ -417,7 +469,7 @@ function Browser.showKeyboard(title, default)
                 y = startY + 4 * (keyH + 5)
                 keyW = 80
                 if ui.button(x, y, keyW, keyH, key, 0xF800) then
-                    input = input:sub(1, -2)
+                    input = string.sub(input, 1, -2)
                 end
             elseif key == "SPACE" then
                 x = 95
@@ -468,7 +520,13 @@ function Browser.showHistory()
         for i, url in ipairs(Browser.history) do
             local y = (i-1) * 30
             ui.rect(5, y, Browser.screenW - 10, 28, 0x2104)
-            ui.text(10, y + 5, url:sub(1, 50), 1, 0xFFFF)
+            
+            -- Обрезаем URL для отображения
+            local displayUrl = url
+            if #displayUrl > 50 then
+                displayUrl = string.sub(displayUrl, 1, 47) .. "..."
+            end
+            ui.text(10, y + 5, displayUrl, 1, 0xFFFF)
             
             -- Клик по истории
             local tx, ty = ui.getTouch().x, ui.getTouch().y
@@ -477,6 +535,7 @@ function Browser.showHistory()
                ui.getTouch().released then
                 Browser.loadPage(url)
                 active = false
+                return
             end
         end
         
@@ -518,7 +577,13 @@ function Browser.showBookmarks()
             local y = (i-1) * 40
             ui.rect(5, y, Browser.screenW - 10, 38, 0x2104)
             ui.text(10, y + 5, bm.name, 1, 0xFFFF)
-            ui.text(10, y + 20, bm.url:sub(1, 45), 1, 0x7BEF)
+            
+            -- Обрезаем URL для отображения
+            local displayUrl = bm.url
+            if #displayUrl > 45 then
+                displayUrl = string.sub(displayUrl, 1, 42) .. "..."
+            end
+            ui.text(10, y + 20, displayUrl, 1, 0x7BEF)
             
             -- Клик по закладке
             local tx, ty = ui.getTouch().x, ui.getTouch().y
@@ -527,6 +592,7 @@ function Browser.showBookmarks()
                ui.getTouch().released then
                 Browser.loadPage(bm.url)
                 active = false
+                return
             end
         end
         
@@ -535,7 +601,11 @@ function Browser.showBookmarks()
         -- Кнопки
         if ui.button(10, Browser.screenH - 75, Browser.screenW - 20, 30, "Add Current", 0x07E0) then
             -- Здесь можно добавить текущую страницу в закладки
-            table.insert(bookmarks, {name = Browser.url:sub(1, 20), url = Browser.url})
+            local name = Browser.url
+            if #name > 20 then
+                name = string.sub(name, 1, 17) .. "..."
+            end
+            table.insert(bookmarks, {name = name, url = Browser.url})
         end
         
         if ui.button(10, Browser.screenH - 40, Browser.screenW - 20, 30, "Close", 0x001F) then
