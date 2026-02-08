@@ -12,7 +12,7 @@ local LINE_H = 28
 local LINK_H = 36
 local MAX_CHARS_PER_LINE = 52
 
-local current_url = "https://news.ycombinator.com"
+local current_url = "https://www.furtails.pw"
 local history = {}
 local history_pos = 0
 local scroll_y = 0
