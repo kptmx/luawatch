@@ -93,64 +93,94 @@ local function add_content(text, is_link, link_url)
 end
 
 -- Новый улучшенный парсер
+-- Улучшенный HTML-парсер
 function parse_html(html)
     content = {}
-    content_height = 60 -- отступ сверху
-
-    html = remove_scripts_styles_comments(html)
-
+    content_height = 60
+    
+    -- Удаляем теги скриптов и стилей
+    html = html:gsub("<script[^>]*>.-</script>", "")
+    html = html:gsub("<style[^>]*>.-</style>", "")
+    
+    -- Преобразуем HTML-сущности
+    local function decode_entities(text)
+        local entities = {
+            ["&nbsp;"] = " ", ["&amp;"] = "&", ["&lt;"] = "<", 
+            ["&gt;"] = ">", ["&quot;"] = "\"", ["&#39;"] = "'",
+            ["&apos;"] = "'", ["&ndash;"] = "-", ["&mdash;"] = "-",
+            ["&hellip;"] = "...", ["&laquo;"] = "<<", ["&raquo;"] = ">>"
+        }
+        for entity, replacement in pairs(entities) do
+            text = text:gsub(entity, replacement)
+        end
+        return text
+    end
+    
+    -- Ищем ссылки и текст
     local pos = 1
-    local in_link = false
-    local link_url = nil
-
+    local last_was_text = false
+    
     while pos <= #html do
-        local tag_start, tag_end = html:find("<[^>]*>", pos)
-        if tag_start then
-            -- Текст до тега
-            local text_part = html:sub(pos, tag_start - 1)
-            text_part = decode_html_entities(text_part)
-            text_part = text_part:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
-            if #text_part > 0 then
-                add_content(text_part, in_link, link_url)
+        -- Ищем открывающий тег <a>
+        local a_start, a_end, a_tag = html:find('<a([^>]*)>', pos)
+        
+        if a_start then
+            -- Текст перед ссылкой
+            local text_before = html:sub(pos, a_start - 1)
+            text_before = decode_entities(text_before)
+            text_before = text_before:gsub("^%s+", ""):gsub("%s+$", "")
+            
+            if #text_before > 0 then
+                add_content(text_before, false)
+                last_was_text = true
             end
-
-            -- Разбор тега
-            local tag_content = html:sub(tag_start + 1, tag_end - 1)
-            local closing = tag_content:match("^%s*/")
-            local tag_name = tag_content:match("^%s*/?%s*([%a][%w-]*)")
-            if tag_name then tag_name = tag_name:lower() end
-
-            if closing then
-                if tag_name == "a" then
-                    in_link = false
-                    link_url = nil
-                elseif tag_name == "p" or tag_name == "div" or tag_name == "li" or tag_name == "br" then
-                    content_height = content_height + LINE_H
+            
+            -- Извлекаем href из тега <a>
+            local href = a_tag:match('href%s*=%s*["\']([^"\']+)["\']')
+            if href then
+                href = resolve_url(current_url, href)
+                
+                -- Ищем закрывающий тег </a>
+                local a_close_start = html:find('</a>', a_end + 1)
+                if a_close_start then
+                    -- Текст внутри ссылки
+                    local link_text = html:sub(a_end + 1, a_close_start - 1)
+                    link_text = decode_entities(link_text)
+                    link_text = link_text:gsub("<[^>]+>", "") -- Удаляем вложенные теги
+                    link_text = link_text:gsub("^%s+", ""):gsub("%s+$", "")
+                    
+                    if #link_text > 0 then
+                        add_content(link_text, true, href)
+                        last_was_text = false
+                    end
+                    
+                    pos = a_close_start + 4
+                else
+                    pos = a_end + 1
                 end
             else
-                if tag_name == "a" then
-                    local href = tag_content:match('href%s*=%s*["\']([^"\']+)["\']')
-                    if href then
-                        link_url = resolve_url(current_url, href)
-                        in_link = true
-                    end
-                elseif tag_name == "br" or tag_name == "p" or tag_name == "div" or tag_name == "li" or
-                       tag_name == "h1" or tag_name == "h2" or tag_name == "h3" or
-                       tag_name == "h4" or tag_name == "h5" or tag_name == "h6" then
+                pos = a_end + 1
+            end
+        else
+            -- Остальной текст после тегов <a>
+            local text_rest = html:sub(pos)
+            text_rest = decode_entities(text_rest)
+            text_rest = text_rest:gsub("<[^>]+>", " ") -- Заменяем все остальные теги пробелами
+            
+            -- Удаляем множественные пробелы и переносы строк
+            text_rest = text_rest:gsub("%s+", " ")
+            text_rest = text_rest:gsub("^%s+", ""):gsub("%s+$", "")
+            
+            if #text_rest > 0 then
+                -- Добавляем пустую строку перед новым блоком текста
+                if last_was_text then
                     content_height = content_height + LINE_H
                 end
+                add_content(text_rest, false)
+                last_was_text = true
             end
-
-            pos = tag_end + 1
-        else
-            -- Остаток текста
-            local text_part = html:sub(pos)
-            text_part = decode_html_entities(text_part)
-            text_part = text_part:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
-            if #text_part > 0 then
-                add_content(text_part, in_link, link_url)
-            end
-            pos = #html + 1
+            
+            break
         end
     end
 end
