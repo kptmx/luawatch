@@ -1,4 +1,3 @@
--- 1. Обязательно объявляем константы экрана в начале файла
 local SCR_W = 410
 local SCR_H = 502
 
@@ -13,16 +12,15 @@ local browser = {
     url = "http://google.com",
     elements = {},
     scroll = 0,
-    history = {},
+    history = {}, -- Таблица для хранения истории
     show_kbd = false
 }
 
--- Вспомогательная функция для разбиения длинного текста на строки
 local function wrap_text(text, limit)
     local lines = {}
+    if not text then return lines end
     while #text > limit do
-        local chunk = text:sub(1, limit)
-        table.insert(lines, chunk)
+        table.insert(lines, text:sub(1, limit))
         text = text:sub(limit + 1)
     end
     table.insert(lines, text)
@@ -31,32 +29,31 @@ end
 
 local function draw_loading(status)
     ui.rect(0, 0, SCR_W, SCR_H, 0x0000)
-    ui.text(100, 200, "LOADING...", 2, 0xFFFF)
-    if status then ui.text(20, 250, status:sub(-40), 1, 0x7BEF) end
+    ui.text(120, 200, "LOADING...", 2, 0xFFFF)
+    if status then ui.text(10, 250, status:sub(-45), 1, 0x7BEF) end
     ui.flush()
 end
 
 local function resolve(path)
     if not path or path:sub(1,4) == "http" then return path end
     local proto, host = browser.url:match("(https?://)([^/]+)")
+    if not proto then return path end
     if path:sub(1,1) == "/" then return proto .. host .. path end
     return browser.url:match("(.*)/") .. "/" .. path
 end
 
 local function parse_html(html)
     browser.elements = {}
-    -- Чистим мусор
     html = html:gsub("<script.-</script>", ""):gsub("<style.-</style>", ""):gsub("<!%-%-.-%-%->", "")
     
     local pos = 1
     while pos <= #html do
-        local start_tag, end_tag, tag_body = html:find("<(%/?%w+.-)>", pos)
+        local start_tag, end_tag, tag_body = html:find("<(%/?%[?%w+.-)>", pos)
         
-        -- Текст до тега
+        -- Обработка текста перед тегом
         local text_before = html:sub(pos, (start_tag or 0) - 1):gsub("%s+", " ")
         if #text_before > 1 then
-            -- Применяем Word Wrap (примерно 40 символов для size 1)
-            local lines = wrap_text(text_before, 40)
+            local lines = wrap_text(text_before, 45)
             for _, line in ipairs(lines) do
                 table.insert(browser.elements, {type="text", val=line})
             end
@@ -64,7 +61,10 @@ local function parse_html(html)
 
         if not start_tag then break end
 
-        local tag_name = tag_body:match("^(%w+)"):lower()
+        -- БЕЗОПАСНЫЙ парсинг имени тега
+        local tag_name_raw = tag_body:match("^(%w+)")
+        local tag_name = tag_name_raw and tag_name_raw:lower() or ""
+
         if tag_name:match("h[1-3]") then
             local h_end = html:find("</" .. tag_name .. ">", end_tag)
             if h_end then
@@ -80,7 +80,7 @@ local function parse_html(html)
             end
         elseif tag_name == "img" then
             local src = tag_body:match("src=\"([^\"]+)\"")
-            if src and (src:find(".jp") or src:find(".JP")) then
+            if src and (src:lower():find(".jp")) then
                 table.insert(browser.elements, {type="img", src=src})
             end
         end
@@ -88,28 +88,29 @@ local function parse_html(html)
     end
 end
 
-function navigate(new_url)
+function navigate(new_url, save_history)
+    if save_history then table.insert(browser.history, browser.url) end
     draw_loading(new_url)
-    collectgarbage("collect") -- Важно для очистки памяти после предыдущей страницы
+    collectgarbage("collect")
     
     local res = net.get(new_url)
     if res.ok then
         browser.url = new_url
         parse_html(res.body)
         
+        if fs.exists("/web/img.jpg") then fs.remove("/web/img.jpg") end
         for _, el in ipairs(browser.elements) do
             if el.type == "img" then
-                draw_loading("Downloading image...")
                 net.download(resolve(el.src), "/web/img.jpg", "flash")
                 break
             end
         end
     else
-        browser.elements = {{type="header", level="1", val="Error"}, {type="text", val=tostring(res.err or res.code)}}
+        browser.elements = {{type="header", level="1", val="Error"}, {type="text", val="Code: "..(res.code or "??")}}
     end
 end
 
--- T9 логика
+-- T9
 local t9 = { keys = {["2"]="abc",["3"]="def",["4"]="ghi",["5"]="jkl",["6"]="mno",["7"]="pqrs",["8"]="tuv",["9"]="wxyz",["0"]=". /:"}, last="", idx=1, time=0 }
 function handle_t9(k)
     local now = hw.millis()
@@ -124,11 +125,17 @@ end
 function loop()
     ui.rect(0, 0, SCR_W, SCR_H, 0x0000)
     
-    -- Панель адреса
-    if ui.button(5, 5, 330, 40, browser.url:sub(-25), 0x18C3) then browser.show_kbd = not browser.show_kbd end
-    if ui.button(340, 5, 65, 40, "GO", 0x07E0) then navigate(browser.url) end
+    -- Панель управления
+    if ui.button(5, 5, 50, 40, "<", 0x3333) then
+        if #browser.history > 0 then
+            navigate(table.remove(browser.history), false)
+        end
+    end
+    
+    if ui.button(60, 5, 275, 40, browser.url:sub(-20), 0x18C3) then browser.show_kbd = not browser.show_kbd end
+    if ui.button(340, 5, 65, 40, "GO", 0x07E0) then navigate(browser.url, true) end
 
-    -- Список контента
+    -- Контент
     browser.scroll = ui.beginList(0, 50, SCR_W, 452, 35, browser.scroll)
     for i, el in ipairs(browser.elements) do
         if el.type == "header" then
@@ -138,8 +145,7 @@ function loop()
             ui.text(10, 0, el.val, 1, 0xFFFF)
         elseif el.type == "link" then
             if ui.button(10, 0, 380, 30, "> "..el.val:sub(1,35), 0x001F) then
-                table.insert(browser.history, browser.url)
-                navigate(resolve(el.url))
+                navigate(resolve(el.url), true)
             end
         elseif el.type == "img" then
             if fs.exists("/web/img.jpg") then ui.drawJPEG(10, 0, "/web/img.jpg") 
@@ -148,13 +154,12 @@ function loop()
     end
     ui.endList()
 
-    -- T9 клавиатура
     if browser.show_kbd then
-        ui.rect(0, 220, SCR_W, 282, 0x0841)
+        ui.rect(0, 220, SCR_W, 282, 0x0000)
         local keys = {"1","2","3","4","5","6","7","8","9","CLR","0","DEL"}
         for i, k in ipairs(keys) do
             local x, y = 10 + ((i-1)%3)*135, 230 + math.floor((i-1)/3)*65
-            if ui.button(x, y, 120, 55, k, 0x3333) then
+            if ui.button(x, y, 120, 55, k, 0x4444) then
                 if k == "DEL" then browser.url = browser.url:sub(1,-2)
                 elseif k == "CLR" then browser.url = ""
                 elseif t9.keys[k] then handle_t9(k) end
@@ -164,7 +169,6 @@ function loop()
     ui.flush()
 end
 
--- Старт
 fs.mkdir("/web")
-navigate(browser.url)
+navigate(browser.url, false)
 while true do loop() end
