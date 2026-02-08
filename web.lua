@@ -7,7 +7,7 @@ local KEYBOARD_Y = 300            -- Начало клавиатуры
 
 -- Состояние браузера
 local browser = {
-    url = "https://raw.githubusercontent.com/kptmx/luawatch/main/main.lua",
+    url = "https://www.google.com",
     history = {},
     history_index = 0,
     current_page = "",
