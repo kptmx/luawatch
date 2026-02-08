@@ -21,66 +21,150 @@ local content = {}
 local content_height = 0
 
 -- Разрешение относительных ссылок
+-- ==========================================
+-- ИНСТРУМЕНТЫ ПАРСИНГА
+-- ==========================================
+
+-- Список тегов, которые вызывают перенос строки
+local BLOCK_TAGS = {
+    p=true, div=true, h1=true, h2=true, h3=true, h4=true, h5=true, h6=true,
+    ul=true, ol=true, li=true, br=true, blockquote=true, hr=true, tr=true
+}
+
+-- Разрешение относительных ссылок
 local function resolve_url(base, href)
+    if not href then return base end
     href = href:gsub("^%s+", ""):gsub("%s+$", "")
+    
+    if href:sub(1,2) == "//" then return "https:" .. href end
     if href:match("^https?://") then return href end
+    if href:match("^mailto:") or href:match("^javascript:") then return nil end
+    
+    local proto, domain = base:match("^(https?://)([^/]+)")
+    if not proto then return href end -- fallback
+    
     if href:sub(1,1) == "/" then
-        local proto_host = base:match("(https?://[^/]+)")
-        return proto_host .. href
+        return proto .. domain .. href
     end
-    local dir = base:match("(.*/)[^/]*$") or base .. "/"
-    return dir .. href
+    
+    local path = base:match("^https?://[^/]+(.*/)") or "/"
+    return proto .. domain .. path .. href
 end
 
 -- Декодирование HTML-сущностей
 local function decode_html_entities(str)
+    if not str then return "" end
     local map = {
         amp = "&", lt = "<", gt = ">", quot = "\"", apos = "'", nbsp = " ",
+        copy = "©", reg = "®", trade = "™", mdash = "—", ndash = "–"
     }
-    -- Числовые сущности &#123; и &#xAB;
-    str = str:gsub("&#(%d+);", function(n) return string.char(tonumber(n)) end)
-    str = str:gsub("&#x(%x+);", function(n) return string.char(tonumber(n,16)) end)
-    -- Именованные
-    str = str:gsub("&(%a+);", map)
+    str = str:gsub("&(#?x?)(%w+);", function(type, val)
+        if type == "" then return map[val] or "" end
+        if type == "#" then return string.char(tonumber(val)) end
+        if type == "#x" then return string.char(tonumber(val, 16)) end
+    end)
     return str
 end
 
--- Удаление скриптов, стилей и комментариев
-local function remove_scripts_styles_comments(html)
-    -- Комментарии
-    html = html:gsub("<!%-%-.-%-%->", "")
-    -- Script (case-insensitive)
-    html = html:gsub("<[sS][cC][rR][iI][pP][tT][^>]*>.-</[sS][cC][rR][iI][pP][tT]>", "")
-    -- Style (case-insensitive)
-    html = html:gsub("<[sS][tT][yY][lL][eE][^>]*>.-</[sS][tT][yY][lL][eE]>", "")
+-- Очистка текста от мусора
+local function clean_text(txt)
+    -- Заменяем любые пробельные символы (табы, переносы) на пробел
+    txt = txt:gsub("[%s\r\n]+", " ")
+    return txt
+end
+
+-- Полное удаление скриптов и стилей
+-- В Lua нет флага "multiline" для точки (.), поэтому используем трюк
+local function remove_junk(html)
+    -- Удаляем комментарии -- Используем цикл, так как gsub может зависнуть на сложном вложении
+    local out = {}
+    local i = 1
+    while i <= #html do
+        local start_c = html:find("<!%-%-", i)
+        if not start_c then
+            table.insert(out, html:sub(i))
+            break
+        end
+        table.insert(out, html:sub(i, start_c - 1))
+        local end_c = html:find("%-%->", start_c + 4)
+        if not end_c then break end -- не закрыт комментарий
+        i = end_c + 3
+    end
+    html = table.concat(out)
+
+    -- Удаляем <script>...</script> и <style>...</style>
+    -- Простой gsub тут плох, лучше удалить контент тегов
+    local function strip_tag_content(text, tagname)
+        local res = {}
+        local pos = 1
+        while true do
+            -- Ищем начало <tag
+            local s_tag, e_tag = text:find("<" .. tagname, pos) -- упрощенный поиск
+            if not s_tag then
+                table.insert(res, text:sub(pos))
+                break
+            end
+            
+            -- Сохраняем то, что было ДО тега
+            table.insert(res, text:sub(pos, s_tag - 1))
+            
+            -- Ищем конец </tag>
+            local end_s, end_e = text:find("</" .. tagname .. ">", e_tag)
+            if not end_s then
+                -- Если закрывающего нет, обрезаем все до конца
+                break 
+            end
+            pos = end_e + 1
+        end
+        return table.concat(res)
+    end
+
+    -- Lua чувствителен к регистру в find, приведем временно к lower? 
+    -- Для простоты предположим стандартный HTML, но лучше сделать gsub с функцией
+    -- Ниже простой, но рабочий вариант:
+    html = strip_tag_content(html, "script")
+    html = strip_tag_content(html, "style")
+    html = strip_tag_content(html, "SCRIPT") -- на всякий случай
+    
     return html
 end
 
--- Перенос текста по словам
+-- Перенос текста (Word Wrap)
 local function wrap_text(text)
-    text = text:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
     if #text == 0 then return {} end
     local lines = {}
     local pos = 1
+    local max_w = MAX_CHARS_PER_LINE
+    
     while pos <= #text do
-        local remaining = #text - pos + 1
-        local chunk_len = math.min(MAX_CHARS_PER_LINE, remaining)
-        local chunk_end = pos + chunk_len - 1
-        if remaining > MAX_CHARS_PER_LINE then
-            local last_space = text:find(" [^ ]*$", pos)
-            if last_space and last_space < pos + MAX_CHARS_PER_LINE then
-                chunk_end = last_space - 1
-            end
+        local rem = #text - pos + 1
+        if rem <= max_w then
+            table.insert(lines, text:sub(pos))
+            break
         end
-        table.insert(lines, text:sub(pos, chunk_end))
-        pos = chunk_end + 1
-        if pos <= #text and text:sub(pos, pos) == " " then pos = pos + 1 end
+        
+        -- Ищем пробел, чтобы не резать слово
+        local substr = text:sub(pos, pos + max_w)
+        local break_point = substr:match(".*%s()") -- последний пробел
+        
+        if not break_point then
+            break_point = max_w -- если слова длиннее строки, режем жестко
+        else
+            break_point = break_point - 1
+        end
+        
+        table.insert(lines, text:sub(pos, pos + break_point - 1))
+        pos = pos + break_point
+        -- Пропускаем пробелы в начале новой строки
+        while text:sub(pos, pos) == " " do pos = pos + 1 end
     end
     return lines
 end
 
--- Добавление контента
+-- Добавление в общий массив контента
 local function add_content(text, is_link, link_url)
+    if not text or #text == 0 or text == " " then return end
+    
     local lines = wrap_text(text)
     for _, line in ipairs(lines) do
         table.insert(content, {
@@ -92,247 +176,94 @@ local function add_content(text, is_link, link_url)
     end
 end
 
--- Улучшенный HTML-парсер с сохранением ссылок
+-- Добавление новой строки (отступа)
+local function add_newline()
+    -- Добавляем пустой отступ только если предыдущий элемент не был отступом
+    if #content > 0 and content[#content].text ~= "" then
+         -- Просто добавляем "пустышку", чтобы сдвинуть Y координату при отрисовке
+         -- Или в вашей логике просто увеличиваем content_height?
+         -- Лучше добавим пустой элемент, чтобы список работал корректно
+         table.insert(content, { type = "text", text = "", url = nil })
+         content_height = content_height + (LINE_H / 2)
+    end
+end
+
+-- ==========================================
+-- ОСНОВНОЙ ПАРСЕР
+-- ==========================================
+
 function parse_html(html)
     content = {}
     content_height = 60
     
-    -- Декодирование HTML-сущностей
-    local function decode_entities(text)
-        text = text:gsub("&nbsp;", " ")
-                   :gsub("&amp;", "&")
-                   :gsub("&lt;", "<")
-                   :gsub("&gt;", ">")
-                   :gsub("&quot;", "\"")
-                   :gsub("&#39;", "'")
-                   :gsub("&apos;", "'")
-                   :gsub("&ndash;", "-")
-                   :gsub("&mdash;", "-")
-                   :gsub("&hellip;", "...")
-        
-        -- Числовые сущности
-        text = text:gsub("&#(%d+);", function(n)
-            return string.char(tonumber(n))
-        end)
-        
-        -- Удаляем все остальные сущности
-        text = text:gsub("&#?[%w%d]+;", " ")
-        
-        return text
-    end
-    
-    -- Очистка текста от лишних пробелов и переносов
-    local function clean_text(text)
-        if not text then return "" end
-        text = decode_entities(text)
-        text = text:gsub("[\r\n]+", " ")
-        text = text:gsub("%s%s+", " ")
-        return text:gsub("^%s+", ""):gsub("%s+$", "")
-    end
-    
-    -- Извлекаем тело документа
-    local body_content = html
-    local body_start = html:find("<body")
-    if body_start then
-        local body_end = html:find("</body>", body_start)
-        if body_end then
-            body_content = html:sub(body_start, body_end - 1)
-        else
-            body_content = html:sub(body_start)
-        end
-    end
-    
-    -- Удаляем скрипты и стили
-    body_content = body_content:gsub("<script[^>]*>.-</script>", "")
-    body_content = body_content:gsub("<style[^>]*>.-</style>", "")
-    body_content = body_content:gsub("<!%-%-.-%-%->", "")
-    
-    -- Проходим по всему HTML и извлекаем текст и ссылки
+    html = remove_junk(html)
+
     local pos = 1
-    local text_buffer = ""
+    local in_link = false
+    local current_link = nil
     
-    while pos <= #body_content do
-        -- Ищем следующий тег
-        local tag_start, tag_end, tag_full = body_content:find("<([^>]+)>", pos)
+    while pos <= #html do
+        -- 1. Ищем начало следующего тега "<"
+        local start_tag = html:find("<", pos)
         
-        if not tag_start then
-            -- Текст после всех тегов
-            text_buffer = text_buffer .. body_content:sub(pos)
-            pos = #body_content + 1
-        else
-            -- Текст перед тегом
-            local text_before = body_content:sub(pos, tag_start - 1)
-            if #text_before > 0 then
-                text_buffer = text_buffer .. text_before
-            end
+        if not start_tag then
+            -- Тегов больше нет, добавляем остаток текста
+            local text = html:sub(pos)
+            text = clean_text(decode_html_entities(text))
+            add_content(text, in_link, current_link)
+            break
+        end
+        
+        -- 2. Обрабатываем ТЕКСТ до тега
+        if start_tag > pos then
+            local text = html:sub(pos, start_tag - 1)
+            text = clean_text(decode_html_entities(text))
+            add_content(text, in_link, current_link)
+        end
+        
+        -- 3. Разбираем сам ТЕГ
+        -- Ищем закрывающую ">"
+        local end_tag = html:find(">", start_tag)
+        if not end_tag then break end -- Обрыв HTML
+        
+        local tag_raw = html:sub(start_tag + 1, end_tag - 1)
+        
+        -- Определяем имя тега
+        -- Паттерн: возможно слэш, затем буквы/цифры
+        local is_closing, tag_name = tag_raw:match("^(/?)([%w%-]+)")
+        
+        if tag_name then
+            tag_name = tag_name:lower()
+            local is_block = BLOCK_TAGS[tag_name]
             
-            -- Обрабатываем тег
-            local tag_name = tag_full:match("^(%w+)")
-            local tag_lower = tag_name and tag_name:lower() or ""
-            
-            -- Закрывающие теги, которые завершают блоки
-            if tag_full:match("^/") then
-                local closing_tag = tag_full:match("^/(%w+)")
-                if closing_tag then
-                    closing_tag = closing_tag:lower()
-                    if closing_tag == "p" or closing_tag == "div" or 
-                       closing_tag == "section" or closing_tag == "article" or
-                       closing_tag:match("^h[1-6]$") then
-                        -- Добавляем накопленный текст
-                        local cleaned = clean_text(text_buffer)
-                        if #cleaned > 2 then
-                            add_content(cleaned, false)
-                        end
-                        text_buffer = ""
-                    end
+            if is_closing == "/" then
+                -- Закрывающий тег (</a>, </div>)
+                if tag_name == "a" then
+                    in_link = false
+                    current_link = nil
+                elseif is_block then
+                    add_newline()
                 end
-            -- Открывающие теги
-            elseif tag_lower == "br" then
-                -- Перенос строки
-                local cleaned = clean_text(text_buffer)
-                if #cleaned > 2 then
-                    add_content(cleaned, false)
-                end
-                text_buffer = ""
-            elseif tag_lower == "a" then
-                -- Ссылка
-                -- Сначала добавляем текст до ссылки
-                local cleaned = clean_text(text_buffer)
-                if #cleaned > 2 then
-                    add_content(cleaned, false)
-                end
-                text_buffer = ""
-                
-                -- Извлекаем URL
-                local href = tag_full:match('href%s*=%s*["\']([^"\']+)["\']')
-                if href then
-                    href = resolve_url(current_url, href)
+            else
+                -- Открывающий тег (<a ...>, <div>)
+                if tag_name == "a" then
+                    -- Ищем href. Поддержка " и '
+                    local href = tag_raw:match('href%s*=%s*"([^"]+)"') or 
+                                 tag_raw:match("href%s*=%s*'([^']+)'")
                     
-                    -- Ищем текст ссылки до закрывающего </a>
-                    local link_end = body_content:find("</a>", tag_end + 1)
-                    if link_end then
-                        local link_text = body_content:sub(tag_end + 1, link_end - 1)
-                        link_text = clean_text(link_text)
-                        
-                        -- Удаляем вложенные теги из текста ссылки
-                        link_text = link_text:gsub("<[^>]+>", "")
-                        
-                        if #link_text > 0 then
-                            add_content(link_text, true, href)
-                        end
-                        
-                        pos = link_end + 4
-                    else
-                        pos = tag_end + 1
+                    if href then
+                        current_link = resolve_url(current_url, href)
+                        if current_link then in_link = true end
                     end
-                else
-                    pos = tag_end + 1
+                elseif tag_name == "br" then
+                    add_newline()
+                elseif is_block then
+                    add_newline()
                 end
-                -- Пропускаем обычную обработку тега
-                goto continue
-            elseif tag_lower == "p" or tag_lower == "div" or 
-                   tag_lower:match("^h[1-6]$") or tag_lower == "article" or 
-                   tag_lower == "section" then
-                -- Начало нового блока - добавляем предыдущий текст
-                local cleaned = clean_text(text_buffer)
-                if #cleaned > 2 then
-                    add_content(cleaned, false)
-                end
-                text_buffer = ""
-            end
-            
-            pos = tag_end + 1
-        end
-        
-        ::continue::
-    end
-    
-    -- Добавляем оставшийся текст в конце
-    local cleaned = clean_text(text_buffer)
-    if #cleaned > 2 then
-        add_content(cleaned, false)
-    end
-    
-    -- Если ничего не нашлось, показываем заглушку
-    if #content == 0 then
-        -- Попробуем найти любые ссылки как запасной вариант
-        for href, link_text in body_content:gmatch('<a%s[^>]*href%s*=%s*["\']([^"\']+)["\'][^>]*>([^<]+)</a>') do
-            link_text = clean_text(link_text)
-            if #link_text > 2 then
-                href = resolve_url(current_url, href)
-                add_content(link_text, true, href)
             end
         end
         
-        if #content == 0 then
-            add_content("Не удалось извлечь содержимое страницы", false)
-            add_content("Возможно, HTML слишком сложный", false)
-        end
-    end
-end
-
--- Функция фильтрации контента (оставляем как есть, но убираем излишние фильтры)
-local function add_content(text, is_link, link_url)
-    if not is_link then
-        -- Легкая фильтрация только для явного мусора
-        -- Удаляем строки с множеством спецсимволов
-        local special_chars = text:gsub("[%w%s]", ""):len()
-        if special_chars > #text * 0.7 then  -- если больше 70% спецсимволов
-            return
-        end
-        
-        -- Удаляем строки которые точно являются кодом
-        if text:match("^[{}();]+$") or
-           text:match("^var%s+[%w_]+%s*=") or
-           text:match("^function%s*%(") then
-            return
-        end
-    end
-    
-    local lines = wrap_text(text)
-    for _, line in ipairs(lines) do
-        table.insert(content, {
-            type = is_link and "link" or "text",
-            text = line,
-            url = link_url
-        })
-        content_height = content_height + (is_link and LINK_H or LINE_H)
-    end
-end
-
--- Обновленная функция добавления контента с дополнительной фильтрацией
-local function add_content(text, is_link, link_url)
-    -- Дополнительная фильтрация для текста
-    if not is_link then
-        -- Удаляем строки с множеством специальных символов
-        local special_chars = text:gsub("[%w%s]", ""):len()
-        if special_chars > #text * 0.5 then  -- если больше 50% спецсимволов
-            return
-        end
-        
-        -- Удаляем строки которые выглядят как CSS/JS
-        if text:match("{%s*[%w%-]+%s*:") or  -- CSS: {property: value}
-           text:match("[%w]+%s*%(%s*[%)%w]") or  -- function()
-           text:match("%.%w+%s*%(") then  -- .method(
-            return
-        end
-        
-        -- Удаляем слишком длинные "слова" (часто это классы CSS или идентификаторы)
-        for word in text:gmatch("[%w_%-]+") do
-            if #word > 30 then
-                return
-            end
-        end
-    end
-    
-    local lines = wrap_text(text)
-    for _, line in ipairs(lines) do
-        table.insert(content, {
-            type = is_link and "link" or "text",
-            text = line,
-            url = link_url
-        })
-        content_height = content_height + (is_link and LINK_H or LINE_H)
+        pos = end_tag + 1
     end
 end
 -- Загрузка страницы
