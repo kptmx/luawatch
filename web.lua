@@ -1,6 +1,9 @@
 -- webbrowser.lua
 -- Простой веб-браузер с T9-клавиатурой для ESP32-S3 (410×502)
 
+local SCR_H = 502
+local SCR_W = 410
+
 local current_url = "http://example.com"
 local history = {}
 local history_pos = 0
