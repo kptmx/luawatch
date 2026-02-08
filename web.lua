@@ -1,10 +1,9 @@
--- Enhanced Web Browser for LuaWatch with Rounded Screen
+-- Enhanced Web Browser for LuaWatch
 local SW, SH = 410, 502
-local SCREEN_RADIUS = 20  -- Радиус закругления углов
 
 -- Состояние браузера
 local url_input = "https://"
-local page_content = ""
+local page_content = {}
 local history = {}
 local scroll_pos = 0
 local max_scroll = 0
@@ -13,42 +12,20 @@ local current_title = "Web Browser"
 local status_msg = "Ready"
 local bookmarks = {}
 local zoom = 1.0
-local images = {}  -- Кэш загруженных изображений
-local links = {}   -- Ссылки на странице
+local images = {}
+local links = {}
 local hover_link = nil
+local active_link = nil
 
--- Элементы управления (отступы от краев)
+-- Элементы управления (сдвинуты от краев)
 local buttons = {
-    {name = "←", x = 15, y = 15, w = 50, h = 40, col = 0x2104, tooltip = "Back"},
-    {name = "→", x = 70, y = 15, w = 50, h = 40, col = 0x2104, tooltip = "Forward"},
-    {name = "↻", x = 125, y = 15, w = 50, h = 40, col = 0x07E0, tooltip = "Reload"},
-    {name = "🏠", x = 180, y = 15, w = 50, h = 40, col = 0x6318, tooltip = "Home"},
-    {name = "+", x = 310, y = 15, w = 40, h = 40, col = 0x2104, tooltip = "Zoom In"},
-    {name = "-", x = 355, y = 15, w = 40, h = 40, col = 0x2104, tooltip = "Zoom Out"},
+    {name = "←", x = 20, y = 15, w = 40, h = 35, col = 0x2104, tooltip = "Back"},
+    {name = "→", x = 65, y = 15, w = 40, h = 35, col = 0x2104, tooltip = "Forward"},
+    {name = "↻", x = 110, y = 15, w = 40, h = 35, col = 0x07E0, tooltip = "Reload"},
+    {name = "🏠", x = 155, y = 15, w = 40, h = 35, col = 0x6318, tooltip = "Home"},
+    {name = "+", x = 320, y = 15, w = 35, h = 35, col = 0x2104, tooltip = "Zoom In"},
+    {name = "-", x = 360, y = 15, w = 35, h = 35, col = 0x2104, tooltip = "Zoom Out"},
 }
-
--- Безопасные координаты (избегаем углов)
-function safe_x(x)
-    return math.max(SCREEN_RADIUS, math.min(SW - SCREEN_RADIUS, x))
-end
-
-function safe_y(y)
-    return math.max(SCREEN_RADIUS, math.min(SH - SCREEN_RADIUS, y))
-end
-
--- Рисуем скругленный прямоугольник
-function rounded_rect(x, y, w, h, color, radius)
-    radius = radius or SCREEN_RADIUS
-    -- Основной прямоугольник
-    ui.rect(x + radius, y, w - 2*radius, h, color)
-    ui.rect(x, y + radius, w, h - 2*radius, color)
-    
-    -- Углы (рисуем маленькие прямоугольники вместо кругов)
-    ui.rect(x, y, radius, radius, color)
-    ui.rect(x + w - radius, y, radius, radius, color)
-    ui.rect(x, y + h - radius, radius, radius, color)
-    ui.rect(x + w - radius, y + h - radius, radius, radius, color)
-end
 
 -- Загрузка закладок
 function load_bookmarks()
@@ -84,37 +61,11 @@ function add_bookmark()
     end
 end
 
--- Загрузка изображения
-function load_image(img_url, x, y)
-    if images[img_url] then return true end  -- Уже в кэше
-    
-    status_msg = "Loading image..."
-    
-    local res = net.get(img_url)
-    if res and res.ok and res.code == 200 then
-        -- Сохраняем временно
-        local temp_path = "/temp_img.jpg"
-        fs.save(temp_path, res.body)
-        
-        -- Проверяем, что это JPEG
-        images[img_url] = {
-            path = temp_path,
-            x = x,
-            y = y,
-            loaded = true
-        }
-        status_msg = "Image loaded"
-        return true
-    end
-    
-    return false
-end
-
--- Улучшенный парсер HTML с поддержкой ссылок и изображений
+-- Улучшенный парсер HTML с поддержкой ссылок
 function parse_html(content, base_url)
     local result = {}
     links = {}
-    images = {}
+    local link_index = 1
     
     -- Извлекаем заголовок
     local title = content:match("<title[^>]*>(.-)</title>")
@@ -126,79 +77,108 @@ function parse_html(content, base_url)
     -- Извлекаем основной текст
     local body = content:match("<body[^>]*>(.-)</body>") or content
     
-    -- Упрощенный парсинг с поддержкой ссылок и изображений
+    -- Удаляем скрипты и стили
+    body = body:gsub("<script[^>]*>.-</script>", "")
+    body = body:gsub("<style[^>]*>.-</style>", "")
+    
+    -- Простой парсинг
     local pos = 1
+    local in_link = false
+    local current_link = nil
+    local link_text = ""
+    
     while pos <= #body do
-        -- Ищем теги
+        -- Ищем следующий тег
         local tag_start, tag_end = body:find("<[^>]+>", pos)
         
         if not tag_start then
             -- Оставшийся текст
-            local text = body:sub(pos)
-            if text:match("%S") then  -- Если не пустой
-                table.insert(result, {type = "text", text = text})
+            local remaining = body:sub(pos)
+            if in_link and current_link then
+                -- Добавляем текст к текущей ссылке
+                link_text = link_text .. remaining
+                table.insert(result, {
+                    type = "link", 
+                    text = link_text, 
+                    url = current_link,
+                    index = link_index
+                })
+                links[link_index] = {url = current_link, text = link_text}
+                link_index = link_index + 1
+            elseif remaining:match("%S") then
+                table.insert(result, {type = "text", text = remaining})
             end
             break
         end
         
         -- Текст перед тегом
         local text_before = body:sub(pos, tag_start - 1)
-        if text_before:match("%S") then
-            table.insert(result, {type = "text", text = text_before})
+        if text_before ~= "" then
+            if in_link and current_link then
+                link_text = link_text .. text_before
+            elseif text_before:match("%S") then
+                table.insert(result, {type = "text", text = text_before})
+            end
         end
         
         -- Обрабатываем тег
         local tag = body:sub(tag_start, tag_end)
         
-        if tag:match("^<a[^>]*href") then
-            -- Ссылка
-            local link_text = body:match(">(.-)</a>", tag_end) or ""
-            local href = tag:match('href%s*=%s*["\']([^"\']+)["\']')
+        if tag:match("^<a[^>]") then
+            -- Начало ссылки
+            local href = tag:match('href%s*=%s*["\']([^"\']+)["\']') or
+                        tag:match("href%s*=%s*([^%s>]+)")
             
-            if href and link_text:match("%S") then
-                -- Абсолютный URL
-                if href:match("^https?://") then
-                    -- уже абсолютный
-                elseif href:match("^//") then
-                    href = "https:" .. href
-                elseif href:match("^/") then
-                    local domain = base_url:match("(https?://[^/]+)")
-                    if domain then href = domain .. href end
-                else
-                    -- относительный
-                    local base = base_url:match("(.-/)[^/]*$")
-                    if base then href = base .. href end
+            if href then
+                -- Преобразуем относительный URL в абсолютный
+                if not href:match("^https?://") then
+                    if href:match("^//") then
+                        href = "https:" .. href
+                    elseif href:match("^/") then
+                        local domain = base_url:match("(https?://[^/]+)")
+                        if domain then 
+                            href = domain .. href 
+                        else
+                            href = base_url .. href
+                        end
+                    else
+                        -- Относительный URL
+                        local base = base_url:match("(.-/)[^/]*$")
+                        if base then 
+                            href = base .. href 
+                        else
+                            href = base_url .. "/" .. href
+                        end
+                    end
                 end
                 
-                if href and href:match("^https?://") then
-                    table.insert(links, {
-                        url = href,
-                        text = link_text:gsub("<[^>]+>", ""):sub(1, 100),
-                        index = #result + 1
-                    })
-                    table.insert(result, {
-                        type = "link",
-                        text = "[" .. link_text:gsub("<[^>]+>", ""):sub(1, 50) .. "]",
-                        url = href
-                    })
-                end
+                in_link = true
+                current_link = href
+                link_text = ""
             end
             
-            -- Пропускаем текст ссылки
-            local link_end = body:find("</a>", tag_end)
-            if link_end then
-                pos = link_end + 4
-            else
-                pos = tag_end + 1
+        elseif tag:match("^</a>") then
+            -- Конец ссылки
+            if in_link and current_link and link_text:match("%S") then
+                table.insert(result, {
+                    type = "link", 
+                    text = link_text, 
+                    url = current_link,
+                    index = link_index
+                })
+                links[link_index] = {url = current_link, text = link_text}
+                link_index = link_index + 1
             end
+            in_link = false
+            current_link = nil
             
-        elseif tag:match("^<img[^>]*src") then
+        elseif tag:match("^<img[^>]") then
             -- Изображение
             local src = tag:match('src%s*=%s*["\']([^"\']+)["\']')
             local alt = tag:match('alt%s*=%s*["\']([^"\']+)["\']') or "Image"
             
             if src then
-                -- Абсолютный URL для изображения
+                -- Преобразуем относительный URL
                 if not src:match("^https?://") then
                     if src:match("^//") then
                         src = "https:" .. src
@@ -211,39 +191,43 @@ function parse_html(content, base_url)
                     end
                 end
                 
-                if src and src:match("^https?://") then
+                if src then
                     table.insert(result, {
                         type = "image",
                         url = src,
                         alt = alt,
-                        placeholder = "[IMG: " .. alt:sub(1, 30) .. "]"
+                        placeholder = "[IMG: " .. alt:sub(1, 20) .. "]"
                     })
                 end
             end
-            pos = tag_end + 1
             
-        elseif tag:match("^<br") or tag:match("^<p") or tag:match("^<div") then
+        elseif tag:match("^<br") or tag:match("^<br%s*/?>") then
             table.insert(result, {type = "newline"})
-            pos = tag_end + 1
             
-        elseif tag:match("^<h[1-6]") then
-            local heading_text = body:match(">(.-)</h[1-6]>", tag_end)
-            if heading_text then
-                table.insert(result, {type = "heading", text = "## " .. heading_text})
-                local closing_tag = body:find("</h[1-6]>", tag_end)
-                if closing_tag then
-                    pos = closing_tag + 5
-                else
-                    pos = tag_end + 1
-                end
-            else
-                pos = tag_end + 1
+        elseif tag:match("^<p[^>]*>") or tag:match("^<div[^>]*>") then
+            if not in_link then
+                table.insert(result, {type = "newline"})
             end
             
-        else
-            -- Игнорируем другие теги
-            pos = tag_end + 1
+        elseif tag:match("^<h[1-6][^>]*>") then
+            if not in_link then
+                local heading_text = body:match(">(.-)</h[1-6]>", tag_end)
+                if heading_text then
+                    heading_text = heading_text:gsub("<[^>]+>", "")
+                    if heading_text:match("%S") then
+                        table.insert(result, {type = "heading", text = heading_text})
+                        local closing_tag = body:find("</h[1-6]>", tag_end)
+                        if closing_tag then
+                            pos = closing_tag + 4
+                            goto continue
+                        end
+                    end
+                end
+            end
         end
+        
+        pos = tag_end + 1
+        ::continue::
     end
     
     return result
@@ -265,7 +249,8 @@ function load_page(url)
     status_msg = "Loading..."
     page_content = {}
     links = {}
-    images = {}
+    active_link = nil
+    hover_link = nil
     
     -- Добавляем в историю
     if #history == 0 or history[#history] ~= url then
@@ -281,20 +266,14 @@ function load_page(url)
         page_content = parse_html(res.body, url)
         scroll_pos = 0
         status_msg = "✓ Loaded"
-        
-        -- Сохраняем последнюю посещенную страницу
         fs.save("/last_page.txt", url)
-        
-        -- Загружаем favicon
-        local favicon_url = get_favicon_url(url)
-        if favicon_url then
-            -- Асинхронно загружаем favicon
-            -- (можно добавить в отдельную задачу)
-        end
     else
         table.insert(page_content, {type = "text", text = "Error loading page"})
         if res and res.code then
             table.insert(page_content, {type = "text", text = "HTTP Code: " .. res.code})
+            if res.err then
+                table.insert(page_content, {type = "text", text = "Error: " .. res.err})
+            end
         end
         status_msg = "✗ Load failed"
     end
@@ -302,195 +281,176 @@ function load_page(url)
     loading = false
 end
 
--- Получение favicon URL
-function get_favicon_url(url)
-    local domain = url:match("https?://([^/]+)")
-    if domain then
-        return "http://" .. domain .. "/favicon.ico"
-    end
-    return nil
-end
-
--- Отображение контента с поддержкой элементов
+-- Отображение контента
 function display_content()
     if #page_content == 0 then
-        ui.text(safe_x(50), safe_y(150), "Enter URL and press GO", 2, 0xFFFF)
+        ui.text(50, 150, "Enter URL and press GO", 2, 0xFFFF)
         return
     end
     
     local content_start_y = 110
     local content_width = 380
-    local line_height = 20 * zoom
+    local line_height = math.floor(20 * zoom)
+    local char_width = math.floor(8 * zoom)
     local current_y = content_start_y - scroll_pos
-    hover_link = nil
     
-    -- Рассчитываем максимальную прокрутку
+    -- Рассчитываем общую высоту контента
     local total_height = 0
-    for _, element in ipairs(page_content) do
-        if element.type == "text" or element.type == "link" or element.type == "heading" then
-            local lines = math.ceil(#element.text / (content_width / (8 * zoom)))
+    local element_positions = {}
+    
+    for i, element in ipairs(page_content) do
+        element_positions[i] = {start_y = total_height}
+        
+        if element.type == "title" then
+            total_height = total_height + 30
+        elseif element.type == "heading" then
+            total_height = total_height + 25
+        elseif element.type == "text" then
+            local lines = math.ceil(#element.text / (content_width / char_width))
             total_height = total_height + lines * line_height
-        elseif element.type == "title" then
-            total_height = total_height + 30 * zoom
+        elseif element.type == "link" then
+            local lines = math.ceil(#element.text / (content_width / char_width))
+            total_height = total_height + lines * line_height
+        elseif element.type == "image" then
+            total_height = total_height + 50
         elseif element.type == "newline" then
             total_height = total_height + line_height
-        elseif element.type == "image" then
-            total_height = total_height + 100 * zoom  -- Место под изображение
         end
+        
+        element_positions[i].end_y = total_height
     end
+    
     max_scroll = math.max(0, total_height - 350)
     
-    -- Отображаем видимые элементы
+    -- Проверяем касание
     local touch = ui.getTouch()
+    hover_link = nil
     
-    for _, element in ipairs(page_content) do
-        if current_y < SH and current_y + line_height > content_start_y then
+    if touch.touching and touch.y > 70 and touch.y < SH - 60 then
+        local relative_y = touch.y - content_start_y + scroll_pos
+        
+        -- Ищем элемент под курсором
+        for i, element in ipairs(page_content) do
+            local pos = element_positions[i]
+            if relative_y >= pos.start_y and relative_y <= pos.end_y then
+                if element.type == "link" then
+                    hover_link = element.url
+                    
+                    if touch.pressed then
+                        active_link = element.url
+                        load_page(element.url)
+                        return
+                    end
+                end
+                break
+            end
+        end
+    end
+    
+    -- Отображаем видимые элементы
+    for i, element in ipairs(page_content) do
+        local pos = element_positions[i]
+        local element_y = content_start_y + pos.start_y - scroll_pos
+        
+        if element_y + (pos.end_y - pos.start_y) > 70 and element_y < SH - 60 then
             if element.type == "title" then
-                ui.text(safe_x(10), safe_y(current_y), element.text, 2, 0x07E0)
-                current_y = current_y + 30 * zoom
+                ui.text(10, element_y, element.text, 2, 0x07E0)
                 
             elseif element.type == "heading" then
-                ui.text(safe_x(10), safe_y(current_y), element.text, 1, 0xF800)
-                current_y = current_y + 25 * zoom
+                ui.text(10, element_y, element.text, 1, 0xF800)
                 
             elseif element.type == "text" then
                 -- Обрезаем текст по ширине
-                local display_text = element.text:sub(1, math.floor(content_width / (8 * zoom)))
-                ui.text(safe_x(10), safe_y(current_y), display_text, 1, 0xFFFF)
-                current_y = current_y + line_height
+                local max_chars = math.floor(content_width / char_width)
+                local display_text = element.text
+                if #display_text > max_chars then
+                    display_text = display_text:sub(1, max_chars)
+                end
+                ui.text(10, element_y, display_text, 1, 0xFFFF)
                 
             elseif element.type == "link" then
+                local max_chars = math.floor(content_width / char_width)
                 local display_text = element.text
-                local text_color = 0x07FF  -- Голубой для ссылок
+                if #display_text > max_chars then
+                    display_text = display_text:sub(1, max_chars) .. "..."
+                end
                 
                 -- Проверяем наведение
-                if touch.touching then
-                    local text_width = #display_text * 8 * zoom
-                    if touch.x >= 10 and touch.x <= 10 + text_width and
-                       touch.y >= current_y and touch.y <= current_y + line_height then
-                        text_color = 0xFFFF  -- Белый при наведении
-                        hover_link = element.url
-                        
-                        -- Обрабатываем клик
-                        if touch.pressed then
-                            load_page(element.url)
-                            return
-                        end
-                    end
+                local is_hovered = (hover_link == element.url)
+                local color = is_hovered and 0xFFFF or 0x07FF
+                
+                ui.text(10, element_y, display_text, 1, color)
+                
+                if is_hovered then
+                    -- Подчеркивание для ссылки
+                    ui.rect(10, element_y + 15, #display_text * char_width, 1, color)
                 end
                 
-                ui.text(safe_x(10), safe_y(current_y), display_text, 1, text_color)
-                current_y = current_y + line_height
-                
             elseif element.type == "image" then
-                -- Отображаем плейсхолдер
-                ui.rect(safe_x(10), safe_y(current_y), 100, 80, 0x2104)
-                ui.text(safe_x(15), safe_y(current_y + 30), element.placeholder, 1, 0xFFFF)
+                ui.rect(10, element_y, 100, 40, 0x2104)
+                ui.text(15, element_y + 10, element.placeholder, 1, 0xFFFF)
                 
-                -- Проверяем наведение на кнопку загрузки
-                if touch.touching and touch.x >= 120 and touch.x <= 220 and
-                   touch.y >= current_y and touch.y <= current_y + 30 then
-                    if touch.pressed then
-                        -- Загружаем изображение
-                        if load_image(element.url, 10, current_y) then
-                            status_msg = "Loading image..."
-                        end
-                    end
+                if ui.button(120, element_y, 100, 30, "Load", 0x6318) then
+                    status_msg = "Loading image..."
                 end
-                
-                -- Кнопка загрузки изображения
-                ui.button(120, current_y, 100, 30, "Load Image", 0x6318)
-                
-                current_y = current_y + 100 * zoom
-                
-            elseif element.type == "newline" then
-                current_y = current_y + line_height
-            end
-        else
-            -- Пропускаем невидимые элементы, но считаем их высоту
-            if element.type == "text" or element.type == "link" or element.type == "heading" then
-                local lines = math.ceil(#element.text / (content_width / (8 * zoom)))
-                current_y = current_y + lines * line_height
-            elseif element.type == "title" then
-                current_y = current_y + 30 * zoom
-            elseif element.type == "newline" then
-                current_y = current_y + line_height
-            elseif element.type == "image" then
-                current_y = current_y + 100 * zoom
-            end
-        end
-        
-        if current_y > SH + scroll_pos then
-            break
-        end
-    end
-    
-    -- Отображаем загруженные изображения
-    for img_url, img_data in pairs(images) do
-        if img_data.loaded and img_data.y - scroll_pos >= content_start_y and 
-           img_data.y - scroll_pos <= SH - 50 then
-            if ui.drawJPEG(img_data.x, img_data.y - scroll_pos, img_data.path) then
-                -- Успешно отображено
-            else
-                ui.text(safe_x(img_data.x + 5), safe_y(img_data.y - scroll_pos + 40), 
-                       "[Failed to display]", 1, 0xF800)
             end
         end
     end
     
-    -- Индикатор прокрутки (справа, с отступом)
+    -- Индикатор прокрутки
     if max_scroll > 0 then
-        local scroll_bar_height = 350 * 350 / (total_height + 50)
-        local scroll_bar_pos = 350 * scroll_pos / (total_height + 50)
-        rounded_rect(SW - 25, content_start_y + scroll_bar_pos, 15, 
-                    math.max(20, scroll_bar_height), 0x6318, 5)
+        local visible_height = 350
+        local scrollbar_height = visible_height * visible_height / (total_height + 50)
+        local scrollbar_pos = visible_height * scroll_pos / (total_height + 50)
+        
+        ui.rect(390, content_start_y, 5, visible_height, 0x2104)
+        ui.rect(390, content_start_y + scrollbar_pos, 5, scrollbar_height, 0x6318)
     end
 end
 
--- Отображение закладок
+-- Показ закладок
 function show_bookmarks()
-    local y = 120
-    ui.text(safe_x(20), safe_y(y), "★ Bookmarks", 2, 0xFFE0)
-    y = y + 40
+    ui.text(20, 100, "★ Bookmarks", 2, 0xFFE0)
     
+    local y = 130
     for i, bm in ipairs(bookmarks) do
         if y < 400 then
-            if ui.button(safe_x(20), safe_y(y), 360, 35, 
-                        bm.title:sub(1, 35), 0x2104) then
+            if ui.button(20, y, 360, 35, bm.title:sub(1, 40), 0x2104) then
                 url_input = bm.url
                 load_page(bm.url)
+                mode = "browse"
                 return
             end
-            ui.text(safe_x(25), safe_y(y + 25), bm.url:sub(1, 40), 1, 0x8C71)
+            ui.text(25, y + 25, bm.url:sub(1, 45), 1, 0x8C71)
             y = y + 60
         end
     end
     
     if #bookmarks == 0 then
-        ui.text(safe_x(20), safe_y(200), "No bookmarks yet", 1, 0xFFFF)
-        ui.text(safe_x(20), safe_y(220), "Press ★ on any page to add", 1, 0x8C71)
+        ui.text(20, 180, "No bookmarks yet", 1, 0xFFFF)
+        ui.text(20, 200, "Press ★ to add current page", 1, 0x8C71)
     end
 end
 
--- Главное меню браузера
+-- Главное меню с быстрыми ссылками
 function show_main_menu()
-    local y = 120
-    ui.text(safe_x(20), safe_y(y), "🌐 Web Browser", 3, 0x07E0)
-    y = y + 60
+    ui.text(20, 100, "🌐 Quick Links", 3, 0x07E0)
     
-    -- Быстрые ссылки
     local quick_links = {
         {"Google", "https://www.google.com"},
         {"DuckDuckGo", "https://duckduckgo.com"},
         {"Wikipedia", "https://wikipedia.org"},
+        {"e621", "https://e621.net"},
         {"GitHub", "https://github.com"},
         {"Hacker News", "https://news.ycombinator.com"},
         {"BBC News", "https://www.bbc.com/news"},
+        {"Reddit", "https://www.reddit.com/.compact"},
     }
     
-    for _, link in ipairs(quick_links) do
-        if y < 350 then
-            if ui.button(safe_x(20), safe_y(y), 360, 35, link[1], 0x2104) then
+    local y = 140
+    for i, link in ipairs(quick_links) do
+        if y < 380 then
+            if ui.button(20, y, 360, 35, link[1], 0x2104) then
                 url_input = link[2]
                 load_page(link[2])
                 mode = "browse"
@@ -499,43 +459,42 @@ function show_main_menu()
             y = y + 45
         end
     end
+    
+    ui.text(20, 430, "Enter custom URL above", 1, 0x8C71)
 end
 
 -- Инициализация
 function setup()
     load_bookmarks()
     
-    -- Загружаем последнюю посещенную страницу
     if fs.exists("/last_page.txt") then
         local last_url = fs.load("/last_page.txt")
         if last_url then
             url_input = last_url
-            load_page(last_url)
         end
     end
 end
 
--- Основной цикл отрисовки
+-- Основная функция отрисовки
 function draw()
-    -- Фон с учетом закругленных углов
-    rounded_rect(0, 0, SW, SH, 0x0000, SCREEN_RADIUS)
+    -- Фон
+    ui.rect(0, 0, SW, SH, 0x0000)
     
-    -- Панель инструментов (закругленная сверху)
-    rounded_rect(0, 0, SW, 70, 0x2104, SCREEN_RADIUS)
+    -- Панель инструментов
+    ui.rect(0, 0, SW, 70, 0x2104)
     
-    -- Кнопки навигации (с отступами от краев)
+    -- Кнопки навигации
     for _, btn in ipairs(buttons) do
         if ui.button(btn.x, btn.y, btn.w, btn.h, btn.name, btn.col) then
             if btn.name == "←" and #history > 1 then
-                table.remove(history) -- Удаляем текущую
+                table.remove(history)
                 local prev_url = history[#history]
                 if prev_url then
                     url_input = prev_url
                     load_page(prev_url)
                 end
             elseif btn.name == "→" then
-                -- В этой реализации нет вперед
-                status_msg = "Forward: Not implemented"
+                status_msg = "Forward: Not available"
             elseif btn.name == "↻" and url_input ~= "" then
                 load_page(url_input)
             elseif btn.name == "🏠" then
@@ -543,30 +502,33 @@ function draw()
                 load_page(url_input)
             elseif btn.name == "+" then
                 zoom = math.min(zoom + 0.1, 2.0)
+                scroll_pos = 0
                 status_msg = "Zoom: " .. math.floor(zoom * 100) .. "%"
             elseif btn.name == "-" then
                 zoom = math.max(zoom - 0.1, 0.5)
+                scroll_pos = 0
                 status_msg = "Zoom: " .. math.floor(zoom * 100) .. "%"
             end
         end
     end
     
-    -- Поле ввода URL (с отступами)
-    rounded_rect(10, 65, 320, 35, 0x0000, 5)
-    ui.text(15, 72, url_input:sub(-30), 1, 0xFFFF)
+    -- Поле ввода URL
+    ui.rect(10, 65, 320, 35, 0x0000)
+    local display_url = url_input
+    if #display_url > 35 then
+        display_url = "..." .. display_url:sub(-32)
+    end
+    ui.text(15, 72, display_url, 1, 0xFFFF)
     
     -- Кнопка GO
     if ui.button(335, 65, 60, 35, "GO", 0x07E0) then
-        load_page(url_input)
-        mode = "browse"
+        if url_input ~= "" then
+            load_page(url_input)
+            mode = "browse"
+        end
     end
     
-    -- Текущий заголовок (если есть)
-    if current_title ~= "Web Browser" then
-        ui.text(safe_x(20), 75, current_title:sub(1, 30), 1, 0xCE79)
-    end
-    
-    -- Отображение контента в зависимости от режима
+    -- Отображение в зависимости от режима
     if mode == "menu" then
         show_main_menu()
     elseif mode == "bookmarks" then
@@ -575,64 +537,61 @@ function draw()
         display_content()
     end
     
-    -- Статус бар (снизу, с отступами от углов)
-    rounded_rect(0, SH - 50, SW, 50, 0x1082, SCREEN_RADIUS)
+    -- Статус бар
+    ui.rect(0, SH - 50, SW, 50, 0x1082)
     
     -- Кнопки нижней панели
     if mode == "browse" then
-        if ui.button(15, SH - 45, 70, 35, "★", hover_link and 0xFFE0 or 0x8C71) then
-            if hover_link then
-                url_input = hover_link
-                load_page(hover_link)
-            else
-                add_bookmark()
-            end
+        -- Кнопка закладки
+        if ui.button(20, SH - 45, 50, 35, "★", 0xFFE0) then
+            add_bookmark()
         end
         
-        if ui.button(90, SH - 45, 70, 35, "📖", 0x6318) then
+        -- Кнопка просмотра закладок
+        if ui.button(75, SH - 45, 50, 35, "📖", 0x6318) then
             mode = "bookmarks"
         end
         
-        if ui.button(165, SH - 45, 70, 35, "💾", 0x07E0) then
+        -- Кнопка сохранения
+        if ui.button(130, SH - 45, 50, 35, "💾", 0x07E0) then
             save_page()
         end
         
-        if ui.button(240, SH - 45, 70, 35, "🏠", 0x001F) then
+        -- Кнопка меню
+        if ui.button(185, SH - 45, 50, 35, "🏠", 0x001F) then
             mode = "menu"
         end
         
-        if ui.button(315, SH - 45, 80, 35, "Exit", 0xF800) then
-            -- Очищаем временные файлы
-            for _, img_data in pairs(images) do
-                if img_data.path and fs.exists(img_data.path) then
-                    fs.remove(img_data.path)
-                end
-            end
+        -- Кнопка выхода
+        if ui.button(240, SH - 45, 140, 35, "Exit Browser", 0xF800) then
             -- Возвращаемся в главное меню
             local f = load(fs.load("/main.lua"))
             if f then f() end
         end
     else
         -- Кнопка возврата в режиме не-browse
-        if ui.button(15, SH - 45, 380, 35, "← Back to Browser", 0x2104) then
+        if ui.button(20, SH - 45, 360, 35, "← Back to Browser", 0x2104) then
             mode = "browse"
         end
     end
     
     -- Статус сообщение
-    ui.text(safe_x(20), SH - 15, status_msg, 1, 
+    ui.text(20, SH - 15, status_msg, 1, 
            loading and 0xF800 or (status_msg:sub(1,1) == "✓" and 0x07E0 or 0xFFFF))
+    
+    -- Показываем ссылку при наведении
+    if hover_link and mode == "browse" then
+        local display_link = hover_link
+        if #display_link > 50 then
+            display_link = display_link:sub(1, 47) .. "..."
+        end
+        ui.text(20, SH - 80, display_link, 1, 0x07FF)
+    end
     
     -- Индикатор загрузки
     if loading then
         local pulse = math.floor((hw.millis() % 1000) / 500)
-        ui.rect(safe_x(SW - 40), SH - 40, 20, 20, pulse == 0 and 0xF800 or 0x0000)
-    end
-    
-    -- Подсказка для ссылки при наведении
-    if hover_link and mode == "browse" then
-        ui.rect(safe_x(10), SH - 90, 390, 25, 0x0000)
-        ui.text(safe_x(12), SH - 85, hover_link:sub(1, 48), 1, 0x07FF)
+        ui.rect(SW - 40, SH - 40, 20, 20, pulse == 0 and 0xF800 or 0x0000)
     end
 end
 
@@ -647,24 +606,27 @@ function save_page()
             if element.type == "text" or element.type == "title" or element.type == "heading" then
                 content = content .. element.text .. "\n"
             elseif element.type == "link" then
-                content = content .. element.text .. " -> " .. element.url .. "\n"
+                content = content .. "[LINK] " .. element.text .. " -> " .. element.url .. "\n"
             elseif element.type == "image" then
-                content = content .. "[Image: " .. element.alt .. " -> " .. element.url .. "]\n"
+                content = content .. "[IMG] " .. element.alt .. " -> " .. element.url .. "\n"
+            elseif element.type == "newline" then
+                content = content .. "\n"
             end
         end
         
         fs.save(filename, content)
-        status_msg = "✓ Page saved"
+        status_msg = "✓ Page saved as text"
     end
 end
 
--- Прокрутка с учетом касаний
+-- Обработка прокрутки
 local last_touch_y = 0
 local is_scrolling = false
 
 function loop()
     local touch = ui.getTouch()
     
+    -- Прокрутка контента
     if touch.touching and touch.y > 70 and touch.y < SH - 60 then
         if not is_scrolling then
             last_touch_y = touch.y
@@ -672,24 +634,26 @@ function loop()
         else
             local delta = last_touch_y - touch.y
             scroll_pos = scroll_pos + delta * 2
-            scroll_pos = math.max(0, math.min(max_scroll, scroll_pos))
+            if scroll_pos < 0 then scroll_pos = 0 end
+            if scroll_pos > max_scroll then scroll_pos = max_scroll end
             last_touch_y = touch.y
         end
     else
         is_scrolling = false
     end
     
-    -- Автоматическая очистка старых изображений
-    for img_url, img_data in pairs(images) do
-        if img_data.path and not fs.exists(img_data.path) then
-            images[img_url] = nil
+    -- Автоматическая очистка
+    if not loading and #page_content > 100 then
+        -- Удаляем старые элементы чтобы сохранить память
+        while #page_content > 50 do
+            table.remove(page_content, 1)
         end
     end
 end
 
--- Инициализация при запуске
+-- Инициализация
 if not _G._BROWSER_INIT then
     _G._BROWSER_INIT = true
-    mode = "menu"  -- Начинаем с меню
+    mode = "menu"
     setup()
 end
