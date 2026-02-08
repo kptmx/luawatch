@@ -10,7 +10,7 @@
 local SCR_W, SCR_H = 410, 502
 local LINE_H = 28
 local LINK_H = 36
-local MAX_CHARS_PER_LINE = 52
+local MAX_CHARS_PER_LINE = 24
 
 local current_url = "https://www.furtails.pw"
 local history = {}
@@ -159,41 +159,102 @@ local function remove_junk(html)
     return html
 end
 
--- Перенос текста (Word Wrap)
-local function wrap_text(text)
-    if #text == 0 then return {} end
-    local lines = {}
-    local pos = 1
-    local max_w = MAX_CHARS_PER_LINE
+-- ==========================================
+-- ПОДДЕРЖКА КИРИЛЛИЦЫ (UTF-8)
+-- ==========================================
+
+-- Функция для подсчета реального количества символов (а не байт)
+-- Русская "А" = 2 байта, но 1 символ ширины
+local function utf8_len(str)
+    -- Считаем все байты, которые НЕ являются продолжением мультибайтового символа (128-191)
+    local _, count = string.gsub(str, "[^\128-\191]", "")
+    return count
+end
+
+-- Функция для получения подстроки с учетом UTF-8 (аналог string.sub)
+-- Нужна, чтобы не резать буквы пополам
+local function utf8_sub(str, i, j)
+    local start_byte = 1
+    local end_byte = #str
+    local char_idx = 0
     
-    while pos <= #text do
-        local rem = #text - pos + 1
-        if rem <= max_w then
-            table.insert(lines, text:sub(pos))
-            break
+    local byte_idx = 1
+    while byte_idx <= #str do
+        char_idx = char_idx + 1
+        
+        if char_idx == i then start_byte = byte_idx end
+        
+        -- Определяем размер текущего символа
+        local b = string.byte(str, byte_idx)
+        local char_len = 1
+        if b >= 240 then char_len = 4
+        elseif b >= 224 then char_len = 3
+        elseif b >= 192 then char_len = 2
         end
         
-        -- Ищем пробел, чтобы не резать слово
-        local substr = text:sub(pos, pos + max_w)
-        local break_point = substr:match(".*%s()") -- последний пробел
-        
-        if not break_point then
-            break_point = max_w -- если слова длиннее строки, режем жестко
-        else
-            break_point = break_point - 1
+        if char_idx == j then 
+            end_byte = byte_idx + char_len - 1 
+            break 
         end
         
-        table.insert(lines, text:sub(pos, pos + break_point - 1))
-        pos = pos + break_point
-        -- Пропускаем пробелы в начале новой строки
-        while text:sub(pos, pos) == " " do pos = pos + 1 end
+        byte_idx = byte_idx + char_len
     end
+    
+    return string.sub(str, start_byte, end_byte)
+end
+
+-- Умный перенос текста (Word Wrap) с поддержкой русского языка
+local function wrap_text(text)
+    if utf8_len(text) <= MAX_CHARS_PER_LINE then
+        return {text}
+    end
+
+    local lines = {}
+    local current_line = ""
+    local current_len = 0 -- длина в символах
+
+    -- Разбиваем текст на слова (по пробелам)
+    for word in text:gmatch("%S+") do
+        local word_len = utf8_len(word)
+        
+        -- Если слово само по себе длиннее всей строки, придется его резать
+        if word_len > MAX_CHARS_PER_LINE then
+            -- Если в буфере что-то было, сбрасываем
+            if current_len > 0 then
+                table.insert(lines, current_line)
+                current_line = ""
+                current_len = 0
+            end
+            table.insert(lines, word) -- Тут можно добавить жесткую резку, но пока оставим так
+        
+        -- Если слово влезает в текущую строку
+        elseif current_len + word_len + (current_len > 0 and 1 or 0) <= MAX_CHARS_PER_LINE then
+            if current_len > 0 then
+                current_line = current_line .. " " .. word
+                current_len = current_len + 1 + word_len
+            else
+                current_line = word
+                current_len = word_len
+            end
+        else
+            -- Слово не влезает, отправляем текущую строку в архив и начинаем новую
+            table.insert(lines, current_line)
+            current_line = word
+            current_len = word_len
+        end
+    end
+    
+    -- Добавляем остаток
+    if current_len > 0 then
+        table.insert(lines, current_line)
+    end
+    
     return lines
 end
 
--- Добавление в общий массив контента
-local function add_content(text, is_link, link_url)
-    if not text or #text == 0 or text == " " then return end
+-- Добавление контента (обновленная версия)
+function add_content(text, is_link, link_url)
+    if not text or text == "" then return end
     
     local lines = wrap_text(text)
     for _, line in ipairs(lines) do
@@ -340,7 +401,7 @@ function draw()
         if ui.button(10, 52, 100, 40, "Back", 0x4208) then go_back() end
     end
     if ui.button(120, 52, 130, 40, "Reload", 0x4208) then load_page(current_url) end
-    if ui.button(260, 52, 130, 40, "Home", 0x4208) then load_page("https://news.ycombinator.com") end
+    if ui.button(260, 52, 130, 40, "Home", 0x4208) then load_page("https://www.google.com") end
 
     -- Контент
     scroll_y = ui.beginList(0, 100, SCR_W, SCR_H - 100, scroll_y, content_height)
@@ -351,7 +412,7 @@ function draw()
             ui.text(20, cy, item.text, 2, 0xFFFF)
             cy = cy + LINE_H
         else
-            local clicked = ui.button(10, cy, SCR_W - 20, LINK_H, "", 0)
+            local clicked = ui.button(10, cy, SCR_W - 20, LINK_H, "", 0x0101)
             ui.text(25, cy + 6, item.text, 2, 0x07FF)
             if clicked then
                 load_page(item.url)
