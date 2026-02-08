@@ -1,115 +1,243 @@
--- Минимальный веб-браузер
-local SCR_W, SCR_H = 410, 502
-local url = "https://www.google.com"
-local scroll = 0
-local lines = {}
-local loading = false
-local history = {}
-local history_idx = 0
+-- Веб-браузер для устройства с ESP32 и Lua интерпретатором
+-- Поддерживает прокрутку, текст, ссылки и изображения
 
-function fetch(url)
-    loading = true
-    local res = net.get(url)
+local SCR_W, SCR_H = 410, 502
+local page_content = ""
+local page_images = {}
+local scroll_y = 0
+local max_scroll_y = 0
+local touch_start_y = 0
+local touch_start_time = 0
+local velocity_y = 0
+local is_scrolling = false
+local current_url = "https://httpbin.org/html"
+local url_input = ""
+local url_input_active = false
+local status_msg = "Ready"
+local loading = false
+local links = {}
+local images = {}
+
+-- Функция для извлечения URL из HTML тега <a>
+local function extract_links(html)
+    links = {}
+    for url, text in html:gmatch('<a[^>]+href%=["\']([^"\']+)["\'][^>]*>([^<]*)</a>') do
+        table.insert(links, {url = url, text = text:gsub("&%w+;", function(entity)
+            -- Простая замена некоторых HTML сущностей
+            if entity == "&amp;" then return "&"
+            elseif entity == "&lt;" then return "<"
+            elseif entity == "&gt;" then return ">"
+            elseif entity == "&quot;" then return "\""
+            else return entity
+            end
+        end)})
+    end
+    return links
+end
+
+-- Функция для извлечения URL изображений из HTML
+local function extract_images(html)
+    images = {}
+    for url in html:gmatch('<img[^>]+src%=["\']([^"\']+)["\'][^>]*>') do
+        table.insert(images, url)
+    end
+    return images
+end
+
+-- Функция для удаления HTML тегов, но сохранения структуры
+local function strip_html(html)
+    -- Замена <br> и <p> на переносы строк
+    html = html:gsub("<br%s*/?>", "\n")
+    html = html:gsub("<p[^>]*>", "\n")
+    html = html:gsub("</p>", "\n")
     
-    if res and res.ok then
-        -- Простейший парсинг: убираем теги
-        local text = res.body:gsub("<[^>]+>", " ")
-        text = text:gsub("%s+", " ")
+    -- Удаление всех остальных тегов
+    local text = html:gsub("<[^>]*>", "")
+    
+    -- Замена HTML сущностей
+    text = text:gsub("&%w+;", function(entity)
+        if entity == "&amp;" then return "&"
+        elseif entity == "&lt;" then return "<"
+        elseif entity == "&gt;" then return ">"
+        elseif entity == "&quot;" then return "\""
+        elseif entity == "&apos;" then return "'"
+        else return entity
+        end
+    end)
+    
+    -- Удаление лишних переносов строк
+    text = text:gsub("\n+", "\n")
+    text = text:gsub("^\n+", "")
+    
+    return text
+end
+
+-- Функция для загрузки страницы
+local function load_page(url)
+    loading = true
+    status_msg = "Loading..."
+    
+    -- Проверяем, является ли URL относительным
+    if not url:find("http") and current_url then
+        local base_url = current_url:match("^(https?://[^/]+)")
+        if base_url then
+            url = base_url .. (url:sub(1,1) == "/" and "" or "/") .. url
+        end
+    end
+    
+    -- Загружаем страницу
+    local response = net.get(url)
+    
+    if response and response.ok then
+        page_content = response.body
+        current_url = url
+        status_msg = "Loaded"
         
-        lines = {}
-        for line in text:gmatch("[^\r\n]+") do
-            if #line > 3 then
-                for i = 1, #line, 60 do
-                    table.insert(lines, line:sub(i, i+59))
+        -- Извлекаем ссылки и изображения
+        extract_links(page_content)
+        extract_images(page_content)
+        
+        -- Подготавливаем текст для отображения
+        local text = strip_html(page_content)
+        
+        -- Разбиваем текст на строки для отображения
+        local lines = {}
+        for line in text:gmatch("[^\n]+") do
+            -- Разбиваем длинные строки на более короткие
+            while #line > 40 do
+                table.insert(lines, line:sub(1, 40))
+                line = line:sub(41)
+            end
+            table.insert(lines, line)
+        end
+        
+        -- Сохраняем обработанный текст
+        page_content = table.concat(lines, "\n")
+        
+        -- Сбрасываем прокрутку
+        scroll_y = 0
+        velocity_y = 0
+        is_scrolling = false
+        
+        -- Вычисляем максимальную прокрутку
+        local line_count = #lines
+        max_scroll_y = math.max(0, (line_count * 20) - SCR_H + 100)
+        
+        -- Загружаем изображения
+        page_images = {}
+        for i, img_url in ipairs(images) do
+            -- Проверяем, является ли URL относительным
+            if not img_url:find("http") and current_url then
+                local base_url = current_url:match("^(https?://[^/]+)")
+                if base_url then
+                    img_url = base_url .. (img_url:sub(1,1) == "/" and "" or "/") .. img_url
+                end
+            end
+            
+            -- Загружаем изображение
+            local img_response = net.get(img_url)
+            if img_response and img_response.ok then
+                -- Сохраняем изображение на SD-карту
+                local img_path = "/temp_img_" .. i .. ".jpg"
+                local file = fs.open(img_path, "w")
+                if file then
+                    file.write(img_response.body)
+                    file.close()
+                    table.insert(page_images, {path = img_url, local_path = img_path, y = 0})
                 end
             end
         end
         
-        if #lines == 0 then
-            lines = {"[Page loaded]", "[No text content found]", "[Try another site]"}
-        end
-        
-        table.insert(history, url)
-        history_idx = #history
+        loading = false
+        return true
     else
-        lines = {"[Error loading page]", "URL: " .. url}
-        if res then
-            table.insert(lines, "Code: " .. tostring(res.code))
-        end
+        status_msg = "Load failed"
+        loading = false
+        return false
     end
-    
-    loading = false
 end
 
--- Загружаем первую страницу
-fetch(url)
-
-while true do
+-- Функция для отрисовки страницы
+local function draw_page()
     -- Фон
-    ui.rect(0, 0, SCR_W, SCR_H, 0x0000)
+    ui.rect(0, 0, SCR_W, SCR_H, 0)
     
-    -- Панель URL
+    -- Заголовок с URL
     ui.rect(0, 0, SCR_W, 40, 0x2104)
+    ui.text(5, 10, url_input_active and url_input or current_url, 1, 0xFFFF)
     
-    -- Поле URL
-    if ui.input(10, 5, 250, 30, url, false) then
-        -- При тапе показываем диалог
-        local new_url = url
-        -- Здесь можно добавить простой ввод
-    end
+    -- Статус
+    ui.text(5, 25, status_msg, 1, loading and 0xF800 or 0x07E0)
     
-    -- Кнопка Go
-    if ui.button(265, 5, 40, 30, "Go", 0x07E0) then
-        fetch(url)
-        scroll = 0
-    end
-    
-    -- Кнопки навигации
-    if history_idx > 1 and ui.button(310, 5, 30, 30, "<", 0x528A) then
-        history_idx = history_idx - 1
-        url = history[history_idx]
-        fetch(url)
-        scroll = 0
-    end
-    
-    if history_idx < #history and ui.button(345, 5, 30, 30, ">", 0x528A) then
-        history_idx = history_idx + 1
-        url = history[history_idx]
-        fetch(url)
-        scroll = 0
-    end
-    
-    if ui.button(380, 5, 25, 30, "R", 0x528A) then
-        fetch(url)
-    end
-    
-    -- Контент со скроллингом
-    local content_h = #lines * 20 + 20
-    local new_scroll = ui.beginList(0, 45, SCR_W, SCR_H - 45, scroll, content_h)
-    if new_scroll ~= scroll then
-        scroll = new_scroll
-    end
-    
-    local y = 45 - scroll
-    for i, line in ipairs(lines) do
-        if y > 45 and y < SCR_H then
-            ui.text(10, y, line, 1, 0xFFFF)
+    -- Кнопка "GO" для ввода URL
+    if ui.button(SCR_W - 40, 5, 35, 30, "GO", 0x07E0) then
+        if url_input_active then
+            load_page(url_input)
+            url_input_active = false
+        else
+            url_input = current_url
+            url_input_active = true
         end
-        y = y + 20
     end
     
-    -- Показываем конец страницы
-    if y < SCR_H then
-        ui.text(10, y, "[End of page]", 1, 0x7BEF)
+    -- Область содержимого
+    ui.beginList(0, 40, SCR_W, SCR_H - 80, scroll_y, max_scroll_y)
+    
+    -- Отображение текста страницы
+    local y = 45
+    local line_height = 20
+    local lines = {}
+    
+    -- Разбиваем текст на строки
+    for line in page_content:gmatch("[^\n]+") do
+        table.insert(lines, line)
+    end
+    
+    -- Отображаем строки
+    for i, line in ipairs(lines) do
+        local line_y = 45 + (i-1) * line_height - scroll_y
+        
+        -- Проверяем, является ли строка ссылкой
+        local is_link = false
+        local link_url = nil
+        
+        for _, link in ipairs(links) do
+            if line:find(link.text, 1, true) then
+                is_link = true
+                link_url = link.url
+                break
+            end
+        end
+        
+        -- Отображаем строку
+        if is_link then
+            ui.text(5, line_y, line, 1, 0x001F)
+            
+            -- Обработка нажатия на ссылку
+            if ui.button(5, line_y - 5, SCR_W - 10, line_height, "", 0) then
+                if link_url then
+                    load_page(link_url)
+                end
+            end
+        else
+            ui.text(5, line_y, line, 1, 0xFFFF)
+        end
+    end
+    
+    -- Отображение изображений
+    for i, img in ipairs(page_images) do
+        local img_y = 100 + i * 150 - scroll_y
+        if img_y > 40 and img_y < SCR_H - 40 then
+            ui.drawJPEG(5, img_y, img.local_path)
+        end
     end
     
     ui.endList()
     
-    -- Индикатор загрузки
-    if loading then
-        ui.rect(SCR_W/2 - 40, SCR_H/2 - 20, 80, 40, 0x0000)
-        ui.text(SCR_W/2 - 35, SCR_H/2 - 10, "Loading...", 2, 0xFFE0)
-    end
+    -- Нижняя панель управления
+    ui.rect(0, SCR_H - 40, SCR_W, 40, 0x2104)
     
-    ui.flush()
-end
+    -- Кнопка "Back"
+    if ui.button(5, SCR_H - 35, 60, 30, "Back", 0xF800) then
+        -- Простая навигация назад (можно улучшить с историей)
+        load_page("https://httpbin.org/html")
