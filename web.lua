@@ -79,7 +79,7 @@ function download_page(url)
     if browser.cache[url] then
         browser.current_page = browser.cache[url]
         browser.loading = false
-        browser.status = "Загружено из кэша"
+        browser.status = "Loaded from cache"
         table.insert(browser.history, url)
         browser.history_index = #browser.history
         return
@@ -90,7 +90,7 @@ function download_page(url)
     if res and res.ok then
         browser.current_page = res.body
         browser.cache[url] = res.body  -- Кэшируем
-        browser.status = "Загружено"
+        browser.status = "Loaded"
         
         -- Сохраняем в историю
         table.insert(browser.history, url)
@@ -100,7 +100,7 @@ function download_page(url)
         extract_and_load_images(res.body, url)
     else
         browser.status = "Ошибка: " .. (res and res.code or "нет соединения")
-        browser.current_page = "<h1>Ошибка загрузки</h1><p>Не удалось загрузить: " .. url .. "</p>"
+        browser.current_page = "<h1>Error</h1><p>loading failed: " .. url .. "</p>"
     end
     
     browser.loading = false
@@ -184,7 +184,7 @@ function render_simple_html(html)
     
     -- Ограничиваем длину для производительности
     if #html > 5000 then
-        html = string.sub(html, 1, 5000) .. "\n[... текст обрезан ...]"
+        html = string.sub(html, 1, 5000) .. "\n[... cut ...]"
     end
     
     return html
@@ -288,7 +288,7 @@ function render_images()
             else
                 -- Показываем плейсхолдер
                 ui.rect(10, y_offset, 100, 100, 2114)
-                ui.text(15, y_offset + 40, "Загрузка...", 1, 65535)
+                ui.text(15, y_offset + 40, "Loading...", 1, 65535)
                 y_offset = y_offset + 110
             end
         end
@@ -305,9 +305,9 @@ function draw_browser()
     ui.text(10, 10, browser.status, 1, 65535)
     
     if browser.loading then
-        ui.text(SCR_W - 80, 10, "⌛", 2, 65535)
+        ui.text(SCR_W - 80, 10, "L", 2, 65535)
     else
-        ui.text(SCR_W - 80, 10, "✓", 2, 2016)
+        ui.text(SCR_W - 80, 10, "OK", 2, 2016)
     end
     
     -- Поле адреса
@@ -318,14 +318,14 @@ function draw_browser()
     end
     
     -- Кнопки навигации
-    if ui.button(10, 100, 60, 35, "← Назад", 1040) and browser.history_index > 1 then
+    if ui.button(10, 100, 60, 35, "Back", 1040) and browser.history_index > 1 then
         browser.history_index = browser.history_index - 1
         browser.url = browser.history[browser.history_index]
         download_page(browser.url)
         browser.page_pos = 0
     end
     
-    if ui.button(80, 100, 60, 35, "→ Вперед", 1040) and 
+    if ui.button(80, 100, 60, 35, "Forward", 1040) and 
        browser.history_index < #browser.history then
         browser.history_index = browser.history_index + 1
         browser.url = browser.history[browser.history_index]
@@ -333,13 +333,13 @@ function draw_browser()
         browser.page_pos = 0
     end
     
-    if ui.button(150, 100, 80, 35, "Обновить", 2016) then
+    if ui.button(150, 100, 80, 35, "Reload", 2016) then
         download_page(browser.url)
         browser.page_pos = 0
     end
     
-    if ui.button(240, 100, 70, 35, "Домой", 63488) then
-        browser.url = "https://raw.githubusercontent.com/kptmx/luawatch/main/main.lua"
+    if ui.button(240, 100, 70, 35, "Home", 63488) then
+        browser.url = "https://www.google.com"
         download_page(browser.url)
         browser.page_pos = 0
     end
@@ -422,7 +422,7 @@ function draw_keyboard()
     end
     
     -- Кнопка отмены
-    if ui.button(SCR_W - 100, KEYBOARD_Y - 50, 90, 40, "Отмена", 2114) then
+    if ui.button(SCR_W - 100, KEYBOARD_Y - 50, 90, 40, "Cancel", 2114) then
         input_mode = false
     end
 end
@@ -436,7 +436,7 @@ function draw()
         draw_browser()
         
         -- Кнопка для открытия клавиатуры
-        if ui.button(SCR_W - 120, 50, 110, 35, "Ввод URL", 1040) then
+        if ui.button(SCR_W - 120, 50, 110, 35, "Enter URL", 1040) then
             input_mode = true
             input_text = browser.url
             cursor_timer = hw.millis()
