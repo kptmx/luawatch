@@ -5,11 +5,11 @@ function draw()
     ui.rect(0, 0, 410, 502, 0) -- Clear background if needed
 
     -- rect_1
-    ui.rect(35, 35, 100, 100, 12678)
+    ui.rect(45, 30, 100, 100, 12678)
     -- rect_2
-    ui.rect(35, 345, 100, 100, 12678)
+    ui.rect(275, 365, 100, 100, 12678)
     -- rect_3
-    ui.rect(255, 345, 100, 100, 12678)
+    ui.rect(40, 365, 100, 100, 12678)
     -- rect_4
-    ui.rect(255, 35, 100, 100, 12678)
+    ui.rect(270, 30, 100, 100, 12678)
 end
