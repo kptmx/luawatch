@@ -325,7 +325,7 @@ function draw()
             ui.text(20, cy, display_text, 2, 0x07FF)
             
             -- Подчеркивание для ссылок
-            ui.rect(20, cy + 18, text_width, 1, 0x07FF)
+            ui.rect(30, cy + 28, text_width, 1, 0x07FF)
             
             cy = cy + LINE_H
         end
