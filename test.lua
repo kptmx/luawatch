@@ -4,129 +4,128 @@
 currentPage = "main"
 
 -- Persistent scroll variables
-if list_6_scroll == nil then list_6_scroll = 0 end
+if web_content_scroll == nil then web_content_scroll = 0 end
 
 function draw_main()
-    -- urlbar
-    if ui.button(20, 410, 370, 30, "New Element", 12678) then
-        print("Button urlbar clicked")
+    -- button_0
+    if ui.button(0, 410, 410, 30, "https://google.com", 14823) then
+        currentPage = "urlenter"
     end
-    -- btn_back
+    -- button_1
     if ui.button(60, 445, 90, 40, "back", 10665) then
-        print("Button btn_back clicked")
+        print("Button button_1 clicked")
     end
-    -- btn_reload
-    if ui.button(155, 445, 80, 40, "reload", 10665) then
-        print("Button btn_reload clicked")
+    -- button_2
+    if ui.button(155, 445, 80, 40, "reld", 10665) then
+        print("Button button_2 clicked")
     end
-    -- btn_menu
-    if ui.button(240, 445, 115, 40, "menu", 22289) then
+    -- button_3
+    if ui.button(240, 445, 115, 40, "menu", 14792) then
         currentPage = "quickmenu"
     end
-    -- statustext
+    -- text_4
     ui.text(95, 485, "Done (150ms)", 1, 65535)
-    -- List: list_6
-    list_6_scroll = ui.beginList(0, 35, 410, 370, list_6_scroll, 400)
+    -- List: web_content
+    web_content_scroll = ui.beginList(0, 35, 410, 370, web_content_scroll, 400)
     ui.endList()
 
-    -- batttext
+    -- text_6
     ui.text(240, 0, "100%", 2, 65535)
-    -- timetext
+    -- text_7
     ui.text(90, 0, "9:42", 2, 65535)
 end
 
 function draw_quickmenu()
-    -- bookmarkadd
+    -- button_0
     if ui.button(20, 100, 180, 60, "add to bm", 10665) then
-        print("Button bookmarkadd clicked")
+        print("Button button_0 clicked")
     end
-    -- bookmarks
+    -- button_1
     if ui.button(210, 100, 180, 60, "bookmarks", 10665) then
-        print("Button bookmarks clicked")
+        print("Button button_1 clicked")
     end
-    -- historybtn
+    -- button_2
     if ui.button(20, 170, 180, 60, "history", 10665) then
-        print("Button historybtn clicked")
+        print("Button button_2 clicked")
     end
-    -- clrhistory
+    -- button_3
     if ui.button(210, 170, 180, 60, "clrhistory", 10665) then
-        print("Button clrhistory clicked")
+        print("Button button_3 clicked")
     end
-    -- exitbtn
+    -- button_4
     if ui.button(30, 405, 140, 45, "exit", 59783) then
-        print("Button exitbtn clicked")
-        hw.reboot()
+        print("Button button_4 clicked")
     end
-    -- text_6
+    -- text_5
     ui.text(25, 245, "free psram:", 1, 65535)
-    -- aboutinfotext
+    -- text_6
     ui.text(125, 470, "webprimitive 0.1", 1, 65535)
-    -- urlinfobox
+    -- text_7
     ui.text(25, 275, "https://google.com", 1, 65535)
-    -- backbtn
+    -- button_8
     if ui.button(255, 405, 120, 45, "back", 10665) then
         currentPage = "main"
     end
 end
 
 function draw_urlenter()
-    -- url_enter_text
+    -- text_0
     ui.text(10, 90, " ", 2, 65535)
-    -- cancelbtn
+    -- button_1
     if ui.button(90, 10, 105, 60, "cancel", 10665) then
         currentPage = "main"
     end
-    -- gobtn
+    -- button_2
     if ui.button(205, 10, 110, 60, "go", 10665) then
-        print("Button gobtn clicked")
+        print("Button button_2 clicked")
     end
-    -- t9kbd_1
+    -- button_3
     if ui.button(15, 175, 120, 55, "New Element", 10665) then
-        print("Button t9kbd_1 clicked")
+        print("Button button_3 clicked")
     end
-    -- t9kbd_2
+    -- button_4
     if ui.button(145, 175, 120, 55, "New Element", 10665) then
-        print("Button t9kbd_2 clicked")
+        print("Button button_4 clicked")
     end
-    -- t9kbd_3
+    -- button_5
     if ui.button(275, 175, 125, 55, "New Element", 10665) then
-        print("Button t9kbd_3 clicked")
+        print("Button button_5 clicked")
     end
-    -- t9kbd_7
+    -- button_6
     if ui.button(15, 305, 120, 55, "New Element", 10665) then
-        print("Button t9kbd_7 clicked")
+        print("Button button_6 clicked")
     end
-    -- t9kbd_9
+    -- button_7
     if ui.button(275, 305, 125, 55, "New Element", 10665) then
-        print("Button t9kbd_9 clicked")
+        print("Button button_7 clicked")
     end
-    -- t9kbd_8
+    -- button_8
     if ui.button(145, 305, 120, 55, "New Element", 10665) then
-        print("Button t9kbd_8 clicked")
+        print("Button button_8 clicked")
     end
-    -- t9kbd_5
+    -- button_9
     if ui.button(145, 240, 120, 55, "New Element", 10665) then
-        print("Button t9kbd_5 clicked")
+        print("Button button_9 clicked")
     end
-    -- t9kbd_4
+    -- button_10
     if ui.button(15, 240, 120, 55, "New Element", 10665) then
-        print("Button t9kbd_4 clicked")
+        print("Button button_10 clicked")
     end
-    -- t9kbd_6
+    -- button_11
     if ui.button(275, 240, 125, 55, "New Element", 10665) then
-        print("Button t9kbd_6 clicked")
+        print("Button button_11 clicked")
     end
-    -- t9kbd_12
+    -- button_12
     if ui.button(275, 370, 125, 55, "New Element", 10665) then
-        print("Button t9kbd_12 clicked")
+        print("Button button_12 clicked")
     end
-    -- t9kbd_11
+    -- button_13
     if ui.button(145, 370, 120, 55, "New Element", 10665) then
-        print("Button t9kbd_11 clicked")
+        print("Button button_13 clicked")
     end
-    -- t9kbd_10
+    -- button_14
     if ui.button(15, 370, 120, 55, "New Element", 10665) then
-        print("Button t9kbd_10 clicked")
+        print("Button button_14 clicked")
     end
 end
 
