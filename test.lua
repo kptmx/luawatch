@@ -3,7 +3,7 @@
 
 local SCR_W, SCR_H = 410, 502
 local LINE_H = 28
-local MAX_CHARS_PER_LINE = 30  -- Увеличим немного для лучшего отображения текста
+local MAX_CHARS_PER_LINE = 45  -- Увеличим немного для лучшего отображения текста
 
 local current_url = "https://www.furtails.pw"
 local history, history_pos = {}, 0
