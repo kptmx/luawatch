@@ -10,7 +10,7 @@ history_pos = 0
 web_content_scroll = 0
 web_content = {}
 web_content_height = 0
-MAX_CHARS_PER_LINE = 16
+MAX_CHARS_PER_LINE = 20
 LINE_H = 28
 LINK_H = 36
 
@@ -379,7 +379,7 @@ function draw_interface()
     if #display_url > 30 then
         display_url = display_url:sub(1, 27) .. "..."
     end
-    
+    ui.fillRect(0, 410, SCR_W, 102)
     if ui.button(0, 410, SCR_W, 30, display_url, 14823) then
         url_input_text = current_url
         currentPage = "urlenter"
