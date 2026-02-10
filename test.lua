@@ -1,6 +1,8 @@
 -- WebPrimitive 0.1 - Текстовый браузер с T9 клавиатурой
 -- Основан на LuaWatch Designer интерфейсе
 
+SCR_W = 410
+SCR_H = 502
 currentPage = "main"
 current_url = "https://google.com"
 history = {}
@@ -137,7 +139,7 @@ end
 
 local function parse_html(html)
     web_content = {}
-    web_content_height = 60
+    web_content_height = 0
     html = remove_junk(html)
 
     local pos = 1
@@ -199,6 +201,11 @@ local function parse_html(html)
         
         pos = end_tag + 1
     end
+    
+    -- Минимальная высота для скролла
+    if web_content_height < SCR_H - 100 then
+        web_content_height = SCR_H - 100
+    end
 end
 
 -- ==========================================
@@ -219,7 +226,7 @@ function load_page(new_url)
         web_content_scroll = 0
     else
         web_content = {}
-        web_content_height = 100
+        web_content_height = SCR_H - 100
         add_content("Ошибка загрузки", false)
         add_content("URL: " .. new_url, false)
         add_content("Код: " .. tostring(res.code or "—"), false)
@@ -257,41 +264,15 @@ function handle_t9_key(key)
 end
 
 -- ==========================================
--- Интерфейсные функции
+-- Вспомогательные функции для рисования контента
 -- ==========================================
 
-function draw_main()
-    -- URL строка (кликабельная)
-    local display_url = current_url
-    if #display_url > 30 then
-        display_url = display_url:sub(1, 27) .. "..."
-    end
+function draw_web_content()
+    -- Устанавливаем скролл только для контентной области
+    local visible_height = SCR_H - 100
+    web_content_scroll = ui.beginList(0, 35, SCR_W, visible_height, web_content_scroll, web_content_height)
     
-    if ui.button(0, 410, 410, 30, display_url, 14823) then
-        url_input_text = current_url
-        currentPage = "urlenter"
-    end
-    
-    -- Панель управления
-    if ui.button(60, 445, 90, 40, "back", 10665) then
-        go_back()
-    end
-    
-    if ui.button(155, 445, 80, 40, "reld", 10665) then
-        load_page(current_url)
-    end
-    
-    if ui.button(240, 445, 115, 40, "menu", 14792) then
-        currentPage = "quickmenu"
-    end
-    
-    -- Статус
-    ui.text(110, 485, "Ready", 1, 65535)
-    
-    -- Содержимое страницы
-    web_content_scroll = ui.beginList(0, 35, 410, 370, web_content_scroll, web_content_height)
-    
-    local cy = 20
+    local cy = 0
     for idx, item in ipairs(web_content) do
         if item.type == "text" then
             if item.text ~= "" then
@@ -311,6 +292,35 @@ function draw_main()
     end
     
     ui.endList()
+end
+
+function draw_interface()
+    -- URL строка (кликабельная)
+    local display_url = current_url
+    if #display_url > 30 then
+        display_url = display_url:sub(1, 27) .. "..."
+    end
+    
+    if ui.button(0, 410, SCR_W, 30, display_url, 14823) then
+        url_input_text = current_url
+        currentPage = "urlenter"
+    end
+    
+    -- Панель управления
+    if ui.button(60, 445, 90, 40, "back", 10665) then
+        go_back()
+    end
+    
+    if ui.button(155, 445, 80, 40, "reld", 10665) then
+        load_page(current_url)
+    end
+    
+    if ui.button(240, 445, 115, 40, "menu", 14792) then
+        currentPage = "quickmenu"
+    end
+    
+    -- Статус
+    ui.text(110, 485, "Ready", 1, 65535)
     
     -- Батарея и время
     ui.text(240, 0, hw.getBatt() .. "%", 2, 65535)
@@ -426,12 +436,17 @@ function draw_urlenter()
 end
 
 function draw()
-    ui.rect(0, 0, 410, 502, 0) -- Чёрный фон
+    ui.rect(0, 0, SCR_W, SCR_H, 0) -- Чёрный фон
     
     if currentPage == "main" then
-        draw_main()
+        -- Рисуем контент страницы (со скроллом)
+        draw_web_content()
+        -- Рисуем интерфейс поверх (без скролла)
+        draw_interface()
+        
     elseif currentPage == "quickmenu" then
         draw_quickmenu()
+        
     elseif currentPage == "urlenter" then
         draw_urlenter()
     end
