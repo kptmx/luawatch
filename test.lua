@@ -348,7 +348,7 @@ end
 
 function draw_web_content()
     -- Устанавливаем скролл только для контентной области
-    local visible_height = SCR_H - 100
+    local visible_height = SCR_H - 140
     web_content_scroll = ui.beginList(0, 35, SCR_W, visible_height, web_content_scroll, web_content_height)
     
     local cy = 0
