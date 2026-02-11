@@ -1,67 +1,58 @@
--- Константы экрана и области текста
-local SCR_W, SCR_H = 410, 502
-local LIST_X, LIST_Y = 5, 65
-local LIST_W, LIST_H = 400, 375
+-- Константы
+local PAGE_H = 375
+local TOTAL_V_H = PAGE_H * 3
+local CENTER_Y = PAGE_H
 
--- Настройки читалки
-local PAGE_H = LIST_H        -- Высота одной страницы
-local TOTAL_V_H = PAGE_H * 3 -- Общая высота области скролла (1125 px)
-local CENTER_Y = PAGE_H      -- Точка "покоя" (начало второй страницы)
-
--- Состояние
-local scrollY = CENTER_Y     -- Текущее положение скролла
-local currentFile = ""
+-- Состояние ридера
 local fileLines = {}
-local topVisibleLine = 1     -- Индекс первой строки на текущей странице
-local mode = "browser"       -- "browser" или "reader"
-local storage = "sd"         -- "sd" или "fs"
+local pageOffsets = {1} -- Индексы строк, с которых начинаются страницы
+local currentPageIdx = 1 -- Индекс в массиве pageOffsets
+local scrollY = CENTER_Y
+local mode = "browser"
+local storage = "sd"
 
--- Загрузка файла
+-- Функция разбивки текста на строки (простая версия)
 function loadFile(path, source)
-    local content = ""
-    if source == "sd" then
-        content = sd.readBytes(path)
-    else
-        content = fs.readBytes(path)
-    end
-    
+    local content = (source == "sd") and sd.readBytes(path) or fs.readBytes(path)
     if content then
         fileLines = {}
         for line in content:gmatch("([^\n]*)\n?") do
             table.insert(fileLines, line)
         end
-        currentFile = path
-        topVisibleLine = 1
+        pageOffsets = {1}
+        currentPageIdx = 1
         scrollY = CENTER_Y
+        ui.setListInertia(false) -- Отключаем инерцию для ридера
         mode = "reader"
     end
 end
 
--- Отрисовка одной страницы текста
-function drawPage(startY, startLine)
+-- Отрисовка страницы и возврат индекса следующей строки
+function drawPage(startY, startLineIdx)
+    if startLineIdx > #fileLines then return nil end
+    
     local y = startY
-    local lineIdx = startLine
-    while y < startY + PAGE_H and lineIdx <= #fileLines do
-        ui.text(10, y, fileLines[lineIdx], 2, 0xFFFF)
+    local curr = startLineIdx
+    while y < startY + PAGE_H and curr <= #fileLines do
+        ui.text(10, y + 5, fileLines[curr], 2, 0xFFFF)
         y = y + 25 -- Высота строки
-        lineIdx = lineIdx + 1
+        curr = curr + 1
     end
-    return lineIdx -- Возвращаем индекс, на котором остановились
+    return curr -- Индекс первой строки СЛЕДУЮЩЕЙ страницы
 end
 
 function draw()
-    ui.rect(0, 0, SCR_W, SCR_H, 0x0000) -- Очистка
+    ui.rect(0, 0, 410, 502, 0x0000)
 
     if mode == "browser" then
-        ui.text(10, 20, "File Browser (" .. storage .. ")", 2, 0x07E0)
-        
-        if ui.button(300, 15, 100, 35, storage == "sd" and "to FLASH" or "to SD", 0x4444) then
+        ui.text(10, 20, "Select File (" .. storage .. ")", 2, 0x07E0)
+        if ui.button(300, 15, 100, 35, "Switch", 0x4444) then
             storage = (storage == "sd") and "fs" or "sd"
         end
 
         local files = (storage == "sd") and sd.list("/") or fs.list("/")
-        local listSY = 0
-        listSY = ui.beginList(LIST_X, LIST_Y, LIST_W, LIST_H, listSY, #files * 50)
+        local _s = 0
+        _s = ui.beginList(5, 65, 400, 375, _s, #files * 50)
         for i, f in ipairs(files) do
             if ui.button(0, (i-1)*50, 380, 45, f, 0x2104) then
                 loadFile("/" .. f, storage)
@@ -70,51 +61,60 @@ function draw()
         ui.endList()
 
     elseif mode == "reader" then
-        ui.text(10, 20, "Reading: " .. currentFile, 1, 0x07E0)
-        if ui.button(330, 15, 70, 35, "Back", 0x8000) then mode = "browser" end
+        -- Панель управления
+        if ui.button(5, 10, 80, 40, "Exit", 0x8000) then mode = "browser" end
+        ui.text(100, 20, "Page: " .. currentPageIdx, 2, 0xFFFF)
 
-        -- Включаем инерцию для плавности, но будем делать доводку
-        ui.setListInertia(true)
+        -- Работа со списком
+        -- Важно: мы управляем scrollY сами
+        local newY = ui.beginList(5, 65, 400, 375, scrollY, TOTAL_V_H)
         
-        -- Главный механизм бесконечного списка
-        -- Передаем TOTAL_V_H (3 страницы)
-        local newY = ui.beginList(LIST_X, LIST_Y, LIST_W, LIST_H, scrollY, TOTAL_V_H)
+        -- 1. Отрисовка ТЕКУЩЕЙ страницы (в центре)
+        local nextStart = drawPage(PAGE_H, pageOffsets[currentPageIdx])
         
-        -- Отрисовка трех сегментов: "прошлое", "настоящее", "будущее"
-        -- 1. Предыдущая страница (если есть)
-        local prevStart = math.max(1, topVisibleLine - 15) -- примерно 15 строк на экран
-        drawPage(0, prevStart)
+        -- 2. Отрисовка ПРЕДЫДУЩЕЙ страницы (сверху)
+        if currentPageIdx > 1 then
+            drawPage(0, pageOffsets[currentPageIdx - 1])
+        end
         
-        -- 2. Текущая страница (центр)
-        local nextStart = drawPage(PAGE_H, topVisibleLine)
-        
-        -- 3. Следующая страница
-        drawPage(PAGE_H * 2, nextStart)
-        
+        -- 3. Отрисовка СЛЕДУЮЩЕЙ страницы (снизу)
+        if nextStart and nextStart <= #fileLines then
+            drawPage(PAGE_H * 2, nextStart)
+            -- Сохраняем "закладку" для следующей страницы, если ее еще нет
+            if not pageOffsets[currentPageIdx + 1] then
+                pageOffsets[currentPageIdx + 1] = nextStart
+            end
+        end
+
         ui.endList()
 
-        -- ЛОГИКА ПЕРЕКЛЮЧЕНИЯ СТРАНИЦ
-        local diff = newY - CENTER_Y
+        -- Логика перелистывания (ручное управление)
         local touch = ui.getTouch()
-
-        if not touch.touching then
-            -- Если пользователь отпустил экран, делаем доводку
-            if diff > PAGE_H / 3 then
-                -- Листаем вперед
-                topVisibleLine = nextStart
-                scrollY = CENTER_Y -- Сбрасываем скролл в центр
-            elseif diff < -PAGE_H / 3 then
-                -- Листаем назад
-                topVisibleLine = prevStart
-                scrollY = CENTER_Y -- Сбрасываем скролл в центр
-            else
-                -- Возвращаем на текущую (доводка)
-                scrollY = newY + (CENTER_Y - newY) * 0.2
-            end
-        else
+        
+        if touch.touching then
+            -- Пока ведем пальцем — обновляем scrollY напрямую
             scrollY = newY
+        else
+            -- Палец отпущен — проверяем, куда довести
+            local diff = newY - CENTER_Y
+            
+            if diff < -50 and pageOffsets[currentPageIdx + 1] then
+                -- Листаем ВПЕРЕД
+                currentPageIdx = currentPageIdx + 1
+                scrollY = CENTER_Y -- Мгновенный сброс в центр
+            elseif diff > 50 and currentPageIdx > 1 then
+                -- Листаем НАЗАД
+                currentPageIdx = currentPageIdx - 1
+                scrollY = CENTER_Y -- Мгновенный сброс в центр
+            else
+                -- Возврат в центр (плавная доводка)
+                if math.abs(diff) > 1 then
+                    scrollY = scrollY + (CENTER_Y - scrollY) * 0.3
+                else
+                    scrollY = CENTER_Y
+                end
+            end
         end
     end
-    
     ui.flush()
 end
