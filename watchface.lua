@@ -1,32 +1,31 @@
--- Reader.lua — простая читалка (все файлы, с фиксом доводки в обе стороны + прогресс в %)
+-- Reader.lua — читалка с фиксом кнопки Back и скролла
 local SCR_W, SCR_H = 410, 502
 local LIST_X, LIST_Y, LIST_W, LIST_H = 5, 65, 400, 375
 
-local mode = "selector"          -- "selector" или "reader"
-local source = "flash"           -- "flash" или "sd"
+local mode = "selector"
+local source = "flash"
 local files = {}
 local file_scroll = 0
 
 local selected_file = nil
-local full_path = nil
-local text_lines = {}            
-local pages = {}                 
-local page_start_lines = {}      -- начало каждой страницы в строках (1-based)
+local text_lines = {}
+local pages = {}
+local page_start_lines = {}
 local total_pages = 0
 local total_lines = 0
-local current_page_idx = 1       
-local reader_scroll = LIST_H     -- стартуем с центра (вторая страница из трёх)
+local current_page_idx = 1
+local reader_scroll = LIST_H     -- центр (вторая страница из трёх)
 
--- Настройки отрисовки текста
+-- Настройки
 local FONT_SIZE = 2
-local LINE_H = 28                
+local LINE_H = 28
 local LEFT_MARGIN = 20
 local TOP_MARGIN = 20
 local LINES_PER_PAGE = math.floor((LIST_H - TOP_MARGIN * 2) / LINE_H)
-local MAX_CHARS_PER_LINE = 52    
+local MAX_CHARS_PER_LINE = 52
 
--- Максимальный размер файла для полной загрузки (256 КБ — безопасно для памяти)
-local MAX_FILE_SIZE = 256 * 1024
+-- Лимит (SD binding жёстко ограничивает 128 КБ, flash может больше, но осторожно)
+local MAX_FILE_SIZE = 300 * 1024  -- увеличил чуть, если PSRAM хватает
 
 -- ===================================================================
 -- Утилиты
@@ -75,10 +74,9 @@ end
 
 local function build_pages()
     pages = {}
-    page_start_lines = {}
+    page_start_lines = {1}
     local cur_page = {}
     local line_idx = 1
-    page_start_lines[1] = 1
 
     for _, ln in ipairs(text_lines) do
         table.insert(cur_page, ln)
@@ -97,28 +95,22 @@ end
 
 local function open_file(path)
     local fs_obj = get_fs()
-
-    -- Получаем размер файла
     local size_res = fs_obj.size(path)
-    if type(size_res) ~= "number" or size_res < 0 then
-        return false, "Не удалось получить размер файла"
-    end
-    if size_res > MAX_FILE_SIZE then
-        return false, string.format("Файл слишком большой (%.1f КБ)", size_res / 1024)
+    if type(size_res) ~= "number" or size_res < 0 or size_res > MAX_FILE_SIZE then
+        return false, string.format("Файл слишком большой или ошибка размера (%.1f КБ)", (size_res or 0)/1024)
     end
 
     local content
     if source == "flash" then
         content = fs_obj.load(path)
-        if not content then return false, "Не удалось прочитать файл" end
     else
         local res = fs_obj.readBytes(path)
-        if type(res) ~= "string" then return false, "Не удалось прочитать файл с SD" end
+        if type(res) ~= "string" then return false, "Ошибка чтения SD" end
         content = res
     end
+    if not content then return false, "Не удалось прочитать" end
 
     selected_file = path:gsub("^/", "")
-    full_path = path
     text_lines = wrap_text(content)
     build_pages()
     current_page_idx = 1
@@ -131,7 +123,7 @@ end
 -- Отрисовка
 -- ===================================================================
 function draw()
-    ui.rect(0, 0, SCR_W, SCR_H, 0)                       -- фон
+    ui.rect(0, 0, SCR_W, SCR_H, 0)
 
     if mode == "selector" then
         ui.rect(0, 0, SCR_W, 60, 0x18C3)
@@ -157,16 +149,38 @@ function draw()
             if ui.button(0, y, LIST_W, item_h - 4, fname, 8452) then
                 local ok, err = open_file("/" .. fname)
                 if not ok then
-                    ui.text(30, 200, "Ошибка: " .. (err or "???"), 2, 63488)
+                    ui.text(30, 200, "Ошибка: " .. err, 2, 63488)
                 end
             end
         end
         ui.endList()
 
-    else -- mode == "reader"
+    else -- reader
         local PAGE_H = LIST_H
         local VIRTUAL_H = PAGE_H * 3
 
+        -- === ВЕРХНЯЯ ПАНЕЛЬ И КНОПКА BACK СНАЧАЛА (чтобы тач обрабатывался до списка) ===
+        ui.rect(0, 0, SCR_W, 60, 0x18C3)
+        ui.text(10, 15, selected_file or "???", 2, 65535)
+
+        local prog = 0
+        if total_lines > 0 then
+            local start_l = page_start_lines[current_page_idx] or 1
+            local page_l = #pages[current_page_idx] or 0
+            local mid_l = start_l + page_l / 2 - 0.5
+            prog = math.floor(mid_l / total_lines * 100)
+        end
+        ui.text(SCR_W - 150, 15, prog .. "%", 2, 65535)
+
+        ui.rect(10, 48, SCR_W - 20, 8, 0x4208)
+        ui.rect(10, 48, math.floor((SCR_W - 20) * prog / 100), 8, 2016)
+
+        if ui.button(SCR_W - 100, 12, 90, 40, "Back", 63488) then
+            mode = "selector"
+            file_scroll = 0
+        end
+
+        -- === Теперь список (скролл и текст) ===
         reader_scroll = ui.beginList(LIST_X, LIST_Y, LIST_W, LIST_H, reader_scroll, VIRTUAL_H)
 
         local prev_p = math.max(1, current_page_idx - 1)
@@ -176,7 +190,6 @@ function draw()
         for i = 1, 3 do
             local pidx = buffer[i]
             local base_y = (i - 1) * PAGE_H + TOP_MARGIN
-
             if pidx >= 1 and pidx <= total_pages then
                 local page_lines = pages[pidx]
                 local page_content_h = #page_lines * LINE_H
@@ -189,7 +202,7 @@ function draw()
         end
         ui.endList()
 
-        -- === ФИКС ДОВОДКИ В ОБЕ СТОРОНЫ ===
+        -- Доводка (snap) в обе стороны
         local shifted = true
         while shifted do
             shifted = false
@@ -204,36 +217,12 @@ function draw()
             end
         end
 
-        -- Верхняя панель (после endList — не скроллится)
-        ui.rect(0, 0, SCR_W, 60, 0x18C3)
-        ui.text(10, 15, selected_file or "???", 2, 65535)
-
-        -- Прогресс в %
-        local prog = 0
-        if total_lines > 0 and total_pages > 0 then
-            local start_l = page_start_lines[current_page_idx] or 1
-            local page_l = #pages[current_page_idx] or 0
-            local mid_l = start_l + page_l / 2 - 0.5
-            prog = math.floor(mid_l / total_lines * 100)
-        end
-        ui.text(SCR_W - 150, 15, prog .. "%", 2, 65535)
-
-        -- Прогресс-бар
-        ui.rect(10, 48, SCR_W - 20, 8, 0x4208) -- фон
-        ui.rect(10, 48, math.floor((SCR_W - 20) * prog / 100), 8, 2016) -- заполнение
-
-        if ui.button(SCR_W - 100, 12, 90, 40, "Back", 63488) then
-            mode = "selector"
-            file_scroll = 0
-        end
-
         if total_lines == 0 then
-            ui.text(50, 200, "Файл пустой или не текст", 2, 63488)
+            ui.text(50, 200, "Файл пустой", 2, 63488)
         end
     end
 
     ui.flush()
 end
 
--- Инициализация
 refresh_file_list()
