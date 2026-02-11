@@ -114,7 +114,7 @@ local function open_file(path)
     text_lines = wrap_text(content)
     build_pages()
     current_page_idx = 1
-    reader_scroll = LIST_H
+    reader_scroll = LIST_H  -- Центр (вторая треть)
     mode = "reader"
     return true
 end
@@ -126,20 +126,31 @@ function draw()
     ui.rect(0, 0, SCR_W, SCR_H, 0)
 
     if mode == "selector" then
+        -- === Верхняя панель ===
         ui.rect(0, 0, SCR_W, 60, 0x18C3)
         ui.text(10, 15, "Читалка — выбор файла", 2, 65535)
 
+        -- === Кнопки выбора носителя ===
         if ui.button(20, 70, 170, 50, "Flash", source == "flash" and 2016 or 33808) then
             source = "flash"
             refresh_file_list()
+            file_scroll = 0
         end
+        
         local sd_label = sd_ok and "SD-карта" or "SD нет"
         local sd_col = (source == "sd") and 2016 or 33808
-        if sd_ok and ui.button(210, 70, 170, 50, sd_label, sd_col) then
-            source = "sd"
-            refresh_file_list()
+        if sd_ok then
+            if ui.button(210, 70, 170, 50, sd_label, sd_col) then
+                source = "sd"
+                refresh_file_list()
+                file_scroll = 0
+            end
+        else
+            ui.rect(210, 70, 170, 50, 0x4208)
+            ui.text(240, 90, "SD нет", 2, 65535)
         end
 
+        -- === Список файлов ===
         local item_h = 48
         local content_h = #files * item_h
         file_scroll = ui.beginList(LIST_X, LIST_Y + 60, LIST_W, LIST_H - 60, file_scroll, content_h)
@@ -150,6 +161,8 @@ function draw()
                 local ok, err = open_file("/" .. fname)
                 if not ok then
                     ui.text(30, 200, "Ошибка: " .. err, 2, 63488)
+                    ui.flush()
+                    delay(1500)
                 end
             end
         end
@@ -159,7 +172,7 @@ function draw()
         local PAGE_H = LIST_H
         local VIRTUAL_H = PAGE_H * 3
 
-        -- === ВЕРХНЯЯ ПАНЕЛЬ И КНОПКА BACK СНАЧАЛА (чтобы тач обрабатывался до списка) ===
+        -- === ВЕРХНЯЯ ПАНЕЛЬ (рисуем вне beginList, чтобы кнопка работала) ===
         ui.rect(0, 0, SCR_W, 60, 0x18C3)
         ui.text(10, 15, selected_file or "???", 2, 65535)
 
@@ -175,14 +188,16 @@ function draw()
         ui.rect(10, 48, SCR_W - 20, 8, 0x4208)
         ui.rect(10, 48, math.floor((SCR_W - 20) * prog / 100), 8, 2016)
 
+        -- Кнопка Back — должна быть ВНЕ beginList
         if ui.button(SCR_W - 100, 12, 90, 40, "Back", 63488) then
             mode = "selector"
             file_scroll = 0
         end
 
-        -- === Теперь список (скролл и текст) ===
+        -- === Область чтения с тройным буфером ===
         reader_scroll = ui.beginList(LIST_X, LIST_Y, LIST_W, LIST_H, reader_scroll, VIRTUAL_H)
 
+        -- Отрисовка трёх страниц (предыдущая, текущая, следующая)
         local prev_p = math.max(1, current_page_idx - 1)
         local next_p = math.min(total_pages, current_page_idx + 1)
         local buffer = { prev_p, current_page_idx, next_p }
@@ -202,21 +217,30 @@ function draw()
         end
         ui.endList()
 
-        -- Доводка (snap) в обе стороны
+        -- === Доводка (snap) в обе стороны ===
         local shifted = true
         while shifted do
             shifted = false
-            if reader_scroll > PAGE_H and current_page_idx < total_pages then
+            if reader_scroll > PAGE_H + 20 and current_page_idx < total_pages then
                 current_page_idx = current_page_idx + 1
                 reader_scroll = reader_scroll - PAGE_H
                 shifted = true
-            elseif reader_scroll < PAGE_H and current_page_idx > 1 then
+            elseif reader_scroll < PAGE_H - 20 and current_page_idx > 1 then
                 current_page_idx = current_page_idx - 1
                 reader_scroll = reader_scroll + PAGE_H
                 shifted = true
             end
         end
 
+        -- Блокировка скролла на границах
+        if current_page_idx == 1 then
+            reader_scroll = math.max(reader_scroll, PAGE_H)
+        end
+        if current_page_idx == total_pages then
+            reader_scroll = math.min(reader_scroll, PAGE_H * 2)
+        end
+
+        -- Сообщение о пустом файле
         if total_lines == 0 then
             ui.text(50, 200, "Файл пустой", 2, 63488)
         end
@@ -225,4 +249,11 @@ function draw()
     ui.flush()
 end
 
+-- Хелпер для задержки
+function delay(ms)
+    local start = hw.millis()
+    while hw.millis() - start < ms do end
+end
+
+-- Инициализация
 refresh_file_list()
