@@ -1,327 +1,111 @@
--- Простая читалка текстовых файлов
-TextReader = {
-    -- Состояние
-    currentFile = nil,
-    totalLines = 0,
-    currentPage = 0,
-    totalPages = 0,
-    linesPerPage = 30, -- подберите под размер шрифта
-    
-    -- Виртуальный скролл
-    scrollY = 150, -- начальная позиция (центр)
-    targetScroll = 150,
-    velocity = 0,
-    
-    -- Кэш страниц
-    cache = {},
-    cacheSize = 3, -- храним 3 страницы (prev, current, next)
-    
-    -- UI элементы
-    fileBrowserActive = false,
-    files = {},
-    browserScroll = 0,
-    selectedFS = "sd", -- "sd" или "flash"
-    
-    -- Инициализация
-    new = function(self, path, fsType)
-        local o = {}
-        setmetatable(o, self)
-        self.__index = self
-        
-        o:loadFile(path, fsType)
-        return o
-    end,
-    
-    -- Загрузка файла
-    loadFile = function(self, path, fsType)
-        self.currentFile = path
-        self.currentFS = fsType or "sd"
-        self.currentPage = 0
-        self.cache = {}
-        self.scrollY = 150
-        self.targetScroll = 150
-        
-        -- Получаем размер файла
-        local size = 0
-        if self.currentFS == "sd" then
-            size = sd.size(path)
+-- Настройки экрана
+local SCR_W, SCR_H = 410, 502
+local LIST_Y, LIST_H = 65, 375
+local PAGE_H = LIST_H
+local TOTAL_VIRTUAL_H = PAGE_H * 3
+
+-- Состояние приложения
+local state = "browser" -- "browser" или "reader"
+local storage = "fs"    -- "fs" или "sd"
+local files = {}
+local current_file = ""
+
+-- Состояние читалки
+local scroll_y = PAGE_H -- Начинаем с центра (вторая страница)
+local file_offset = 0   -- Базовое смещение в файле для "верхней" страницы
+local pages = {"", "", ""} -- Буфер текста (Prev, Curr, Next)
+local char_per_page = 600 -- Примерное кол-во символов на страницу (подбери под шрифт)
+
+function load_pages(start_offset)
+    for i = 1, 3 do
+        local offset = start_offset + (i - 1) * char_per_page
+        if offset < 0 then
+            pages[i] = "--- Начало файла ---"
         else
-            size = fs.size(path)
-        end
-        
-        if size and size > 0 then
-            -- Читаем первую страницу для подсчета строк
-            local content = self:readPage(0)
-            if content then
-                -- Подсчитываем количество строк в файле
-                local _, count = content:gsub("\n", "\n")
-                self.totalLines = count
-                self.totalPages = math.ceil(self.totalLines / self.linesPerPage)
-            end
-        end
-    end,
-    
-    -- Чтение конкретной страницы
-    readPage = function(self, pageNum)
-        if pageNum < 0 or pageNum >= self.totalPages then
-            return nil
-        end
-        
-        -- Проверяем кэш
-        if self.cache[tostring(pageNum)] then
-            return self.cache[tostring(pageNum)]
-        end
-        
-        -- Читаем из файла
-        local content = ""
-        local startLine = pageNum * self.linesPerPage + 1
-        local endLine = math.min(startLine + self.linesPerPage - 1, self.totalLines)
-        
-        if self.currentFS == "sd" then
-            local data = sd.readBytes(self.currentFile)
-            if data then
-                content = self:extractLines(data, startLine, endLine)
-            end
-        else
-            local data = fs.readBytes(self.currentFile)
-            if data then
-                content = self:extractLines(data, startLine, endLine)
-            end
-        end
-        
-        -- Кэшируем
-        if #self.cache >= self.cacheSize then
-            -- Удаляем самую старую запись
-            for k,_ in pairs(self.cache) do
-                self.cache[k] = nil
-                break
-            end
-        end
-        self.cache[tostring(pageNum)] = content
-        
-        return content
-    end,
-    
-    -- Извлечение строк из текста
-    extractLines = function(self, text, startLine, endLine)
-        local lines = {}
-        local idx = 1
-        local lineNum = 1
-        
-        for line in text:gmatch("([^\n]*)\n?") do
-            if lineNum >= startLine and lineNum <= endLine then
-                table.insert(lines, line)
-            elseif lineNum > endLine then
-                break
-            end
-            lineNum = lineNum + 1
-        end
-        
-        return table.concat(lines, "\n")
-    end,
-    
-    -- Обновление страницы при доводке
-    updatePageCenter = function(self)
-        -- Определяем страницу по позиции скролла
-        local pageHeight = 375 -- высота области просмотра
-        local virtualHeight = self.totalPages * pageHeight -- виртуальная высота в 3 раза больше реальной
-        
-        local virtualPos = self.scrollY
-        local targetPage = math.floor((virtualPos - 75) / pageHeight) -- 75 = начальный оффсет
-        
-        if targetPage < 0 then targetPage = 0 end
-        if targetPage >= self.totalPages then targetPage = self.totalPages - 1 end
-        
-        if targetPage ~= self.currentPage then
-            self.currentPage = targetPage
-            -- Предзагружаем соседние страницы
-            self:readPage(self.currentPage - 1)
-            self:readPage(self.currentPage)
-            self:readPage(self.currentPage + 1)
-        end
-    end,
-    
-    -- Отрисовка страницы
-    drawPage = function(self, pageNum, offsetY)
-        if pageNum < 0 or pageNum >= self.totalPages then
-            -- Пустая страница (за пределами файла)
-            return
-        end
-        
-        local content = self:readPage(pageNum)
-        if content then
-            local y = 65 + offsetY
-            local lineNum = 1
-            
-            for line in content:gmatch("([^\n]+)") do
-                if y + lineNum * 20 >= 65 and y + lineNum * 20 <= 440 then
-                    ui.text(10, y + lineNum * 20, line, 2, 65535)
-                end
-                lineNum = lineNum + 1
-            end
-        end
-    end,
-    
-    -- Отрисовка файлового браузера
-    drawFileBrowser = function(self)
-        ui.rect(0, 0, 410, 502, 0)
-        ui.text(80, 20, "File Browser", 3, 2016)
-        
-        -- Переключатель SD/Flash
-        if ui.button(20, 60, 100, 35, "SD", self.selectedFS == "sd" and 1040 or 8452) then
-            self.selectedFS = "sd"
-            self:refreshFileList()
-        end
-        if ui.button(130, 60, 100, 35, "FLASH", self.selectedFS == "flash" and 1040 or 8452) then
-            self.selectedFS = "flash"
-            self:refreshFileList()
-        end
-        
-        -- Кнопка "Назад"
-        if ui.button(300, 60, 90, 35, "BACK", 63488) then
-            self.fileBrowserActive = false
-        end
-        
-        -- Список файлов
-        local scroll = ui.beginList(5, 105, 400, 350, self.browserScroll, 800)
-        
-        local y = 10
-        for i, file in ipairs(self.files) do
-            -- Определяем иконку
-            local icon = file:match("%.txt$") and "📄 " or "📁 "
-            
-            if ui.button(10, y, 380, 35, icon .. file, 2113) then
-                if file:match("%.txt$") then
-                    -- Открываем файл
-                    self:loadFile(file, self.selectedFS)
-                    self.fileBrowserActive = false
-                else
-                    -- Заходим в папку (TODO)
-                end
-            end
-            y = y + 40
-        end
-        
-        ui.endList()
-        self.browserScroll = scroll
-    end,
-    
-    -- Обновление списка файлов
-    refreshFileList = function(self)
-        self.files = {}
-        local list = {}
-        
-        if self.selectedFS == "sd" then
-            list = sd.list("/")
-        else
-            list = fs.list("/")
-        end
-        
-        if list and type(list) == "table" then
-            -- Сортируем: папки, потом файлы
-            local dirs, files = {}, {}
-            for i, name in ipairs(list) do
-                if name:match("%.txt$") then
-                    table.insert(files, name)
-                else
-                    table.insert(dirs, name)
-                end
-            end
-            table.sort(dirs)
-            table.sort(files)
-            
-            -- Объединяем
-            for _, d in ipairs(dirs) do table.insert(self.files, d) end
-            for _, f in ipairs(files) do table.insert(self.files, f) end
-        end
-    end,
-    
-    -- Основной рендер
-    render = function(self)
-        if self.fileBrowserActive then
-            self:drawFileBrowser()
-            return
-        end
-        
-        if not self.currentFile then
-            -- Показываем браузер по умолчанию
-            self.fileBrowserActive = true
-            self:refreshFileList()
-            self:drawFileBrowser()
-            return
-        end
-        
-        -- Очистка
-        ui.rect(0, 0, 410, 502, 0)
-        
-        -- Заголовок
-        ui.text(10, 20, self.currentFile, 2, 2016)
-        ui.text(300, 20, self.currentPage + 1 .. "/" .. self.totalPages, 2, 65535)
-        
-        -- Кнопка "Список файлов"
-        if ui.button(300, 450, 90, 35, "FILES", 1040) then
-            self.fileBrowserActive = true
-            self:refreshFileList()
-        end
-        
-        -- Область текста с виртуальным скроллом
-        local pageHeight = 375 -- высота области просмотра
-        local virtualHeight = self.totalPages * pageHeight * 3 -- виртуальная высота в 3 раза больше
-        
-        -- Скролл с инерцией
-        ui.setListInertia(true)
-        self.scrollY = ui.beginList(5, 65, 400, pageHeight, self.scrollY, virtualHeight)
-        
-        -- Отображаем три страницы
-        local viewportCenter = self.scrollY + pageHeight/2
-        local centerPage = math.floor(viewportCenter / pageHeight)
-        
-        -- Рисуем страницы: предыдущая (-1), текущая (0), следующая (+1)
-        self:drawPage(centerPage - 1, (centerPage - 1) * pageHeight - self.scrollY)
-        self:drawPage(centerPage, centerPage * pageHeight - self.scrollY)
-        self:drawPage(centerPage + 1, (centerPage + 1) * pageHeight - self.scrollY)
-        
-        ui.endList()
-        
-        -- Доводчик к ближайшей странице
-        if not ui.getTouch().touching then
-            -- Рассчитываем целевую позицию (центр страницы)
-            local targetPage = math.floor((self.scrollY + pageHeight/2) / pageHeight)
-            self.targetScroll = targetPage * pageHeight + pageHeight/2 - pageHeight/2
-            
-            -- Плавное движение к цели
-            local diff = self.targetScroll - self.scrollY
-            if math.abs(diff) > 0.5 then
-                self.scrollY = self.scrollY + diff * 0.25
+            local content = ""
+            if storage == "fs" then
+                -- В твоем API fs.readBytes/load читает весь файл. 
+                -- Для больших файлов лучше использовать частичное чтение, 
+                -- но пока используем упрощенную эмуляцию из того что есть:
+                local full = fs.load(current_file) or ""
+                pages[i] = full:sub(offset + 1, offset + char_per_page)
             else
-                self.scrollY = self.targetScroll
-                -- Обновляем кэш когда остановились
-                self:updatePageCenter()
+                local res = sd.readBytes(current_file)
+                local full = (type(res) == "table" and res.ok) and res.body or ""
+                pages[i] = full:sub(offset + 1, offset + char_per_page)
             end
         end
     end
-}
+end
 
--- Глобальный экземпляр читалки
-reader = nil
-
--- Основная функция draw
-function draw()
-    if not reader then
-        reader = TextReader:new()
-    end
+function draw_browser()
+    ui.text(20, 10, "File Browser: " .. storage:upper(), 2, 0x07E0)
     
-    reader:render()
+    if ui.button(300, 5, 100, 40, storage == "fs" and "to SD" or "to Flash", 0x3186) then
+        storage = (storage == "fs") and "sd" or "fs"
+        files = _G[storage].list("/") or {}
+    end
+
+    local list_scroll = 0
+    list_scroll = ui.beginList(5, 60, 400, 400, list_scroll, #files * 50)
+    for i, f in ipairs(files) do
+        if ui.button(10, (i-1)*50, 380, 45, f, 0x2104) then
+            current_file = "/" .. f
+            file_offset = 0
+            load_pages(0)
+            scroll_y = PAGE_H
+            state = "reader"
+        end
+    end
+    ui.endList()
 end
 
--- Инициализация (можно вызвать вручную для открытия конкретного файла)
-function openFile(path, useSD)
-    reader = TextReader:new(path, useSD and "sd" or "flash")
+function draw_reader()
+    ui.text(10, 10, "File: " .. current_file, 1, 0xFFFF)
+    if ui.button(340, 5, 60, 40, "Back", 0xF800) then state = "browser" end
+
+    -- Виртуальный скролл (высота контента = PAGE_H * 3)
+    local new_scroll = ui.beginList(5, LIST_Y, 400, LIST_H, scroll_y, TOTAL_VIRTUAL_H)
+    
+    -- Отрисовка трех страниц
+    for i = 1, 3 do
+        ui.text(10, (i-1) * PAGE_H + 5, pages[i], 1, 0xFFFF)
+        -- Разделитель страниц
+        ui.rect(5, i * PAGE_H - 1, 390, 1, 0x4444)
+    end
+    ui.endList()
+
+    local touch = ui.getTouch()
+
+    -- Логика переключения страниц (когда палец отпущен)
+    if not touch.touching and scroll_y ~= new_scroll then
+        if new_scroll < PAGE_H * 0.5 then
+            -- Перелистнули вверх (на предыдущую)
+            file_offset = math.max(0, file_offset - char_per_page)
+            load_pages(file_offset)
+            scroll_y = PAGE_H -- Возвращаем в центр
+        elseif new_scroll > PAGE_H * 1.5 then
+            -- Перелистнули вниз (на следующую)
+            file_offset = file_offset + char_per_page
+            load_pages(file_offset)
+            scroll_y = PAGE_H -- Возвращаем в центр
+        else
+            -- Доводчик (Snap to center)
+            scroll_y = PAGE_H
+        end
+    else
+        scroll_y = new_scroll
+    end
 end
 
--- Очистка кэша при необходимости
-function clearCache()
-    if reader then
-        reader.cache = {}
+-- Инициализация списка файлов
+files = fs.list("/") or {}
+
+function draw()
+    ui.rect(0, 0, SCR_W, SCR_H, 0x0000) -- Clear screen
+    if state == "browser" then
+        draw_browser()
+    else
+        draw_reader()
     end
 end
