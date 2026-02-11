@@ -1,4 +1,4 @@
--- Reader.lua — простая читалка (все файлы, без фильтра .txt)
+-- Reader.lua — простая читалка (все файлы, с фиксом доводки в обе стороны + прогресс в %)
 local SCR_W, SCR_H = 410, 502
 local LIST_X, LIST_Y, LIST_W, LIST_H = 5, 65, 400, 375
 
@@ -11,7 +11,9 @@ local selected_file = nil
 local full_path = nil
 local text_lines = {}            
 local pages = {}                 
+local page_start_lines = {}      -- начало каждой страницы в строках (1-based)
 local total_pages = 0
+local total_lines = 0
 local current_page_idx = 1       
 local reader_scroll = LIST_H     -- стартуем с центра (вторая страница из трёх)
 
@@ -22,6 +24,9 @@ local LEFT_MARGIN = 20
 local TOP_MARGIN = 20
 local LINES_PER_PAGE = math.floor((LIST_H - TOP_MARGIN * 2) / LINE_H)
 local MAX_CHARS_PER_LINE = 52    
+
+-- Максимальный размер файла для полной загрузки (256 КБ — безопасно для памяти)
+local MAX_FILE_SIZE = 256 * 1024
 
 -- ===================================================================
 -- Утилиты
@@ -35,8 +40,7 @@ local function refresh_file_list()
     local raw = fs_obj.list("/") or {}
     files = {}
     for _, name in ipairs(raw) do
-        -- Показываем ВСЕ файлы (без фильтра по расширению)
-        if name ~= "" and not name:match("/$") then  -- исключаем папки, если они попадают
+        if name ~= "" and not name:match("/$") then
             table.insert(files, name)
         end
     end
@@ -51,7 +55,6 @@ local function wrap_text(raw_text)
         elseif #line <= MAX_CHARS_PER_LINE then
             table.insert(lines, line)
         else
-            -- word wrap
             local words = {}
             for w in line:gmatch("%S+") do table.insert(words, w) end
             local cur = ""
@@ -72,23 +75,39 @@ end
 
 local function build_pages()
     pages = {}
+    page_start_lines = {}
     local cur_page = {}
+    local line_idx = 1
+    page_start_lines[1] = 1
+
     for _, ln in ipairs(text_lines) do
         table.insert(cur_page, ln)
         if #cur_page >= LINES_PER_PAGE then
             table.insert(pages, cur_page)
             cur_page = {}
+            line_idx = line_idx + LINES_PER_PAGE
+            table.insert(page_start_lines, line_idx)
         end
     end
     if #cur_page > 0 then table.insert(pages, cur_page) end
     total_pages = #pages
-    if total_pages == 0 then total_pages = 1 end  -- хотя бы одна пустая страница
+    if total_pages == 0 then total_pages = 1 end
+    total_lines = #text_lines
 end
 
 local function open_file(path)
     local fs_obj = get_fs()
-    local content
 
+    -- Получаем размер файла
+    local size_res = fs_obj.size(path)
+    if type(size_res) ~= "number" or size_res < 0 then
+        return false, "Не удалось получить размер файла"
+    end
+    if size_res > MAX_FILE_SIZE then
+        return false, string.format("Файл слишком большой (%.1f КБ)", size_res / 1024)
+    end
+
+    local content
     if source == "flash" then
         content = fs_obj.load(path)
         if not content then return false, "Не удалось прочитать файл" end
@@ -102,8 +121,7 @@ local function open_file(path)
     full_path = path
     text_lines = wrap_text(content)
     build_pages()
-    current_page_idx = math.min(current_page_idx, total_pages)
-    if current_page_idx < 1 then current_page_idx = 1 end
+    current_page_idx = 1
     reader_scroll = LIST_H
     mode = "reader"
     return true
@@ -116,11 +134,9 @@ function draw()
     ui.rect(0, 0, SCR_W, SCR_H, 0)                       -- фон
 
     if mode == "selector" then
-        -- Верхняя панель селектора
         ui.rect(0, 0, SCR_W, 60, 0x18C3)
         ui.text(10, 15, "Читалка — выбор файла", 2, 65535)
 
-        -- Кнопки выбора источника
         if ui.button(20, 70, 170, 50, "Flash", source == "flash" and 2016 or 33808) then
             source = "flash"
             refresh_file_list()
@@ -132,7 +148,6 @@ function draw()
             refresh_file_list()
         end
 
-        -- Список файлов
         local item_h = 48
         local content_h = #files * item_h
         file_scroll = ui.beginList(LIST_X, LIST_Y + 60, LIST_W, LIST_H - 60, file_scroll, content_h)
@@ -142,8 +157,7 @@ function draw()
             if ui.button(0, y, LIST_W, item_h - 4, fname, 8452) then
                 local ok, err = open_file("/" .. fname)
                 if not ok then
-                    -- показываем ошибку поверх
-                    ui.text(50, 200, "Ошибка: " .. (err or "???"), 2, 63488)
+                    ui.text(30, 200, "Ошибка: " .. (err or "???"), 2, 63488)
                 end
             end
         end
@@ -153,7 +167,6 @@ function draw()
         local PAGE_H = LIST_H
         local VIRTUAL_H = PAGE_H * 3
 
-        -- Сначала рисуем список (только текст страниц)
         reader_scroll = ui.beginList(LIST_X, LIST_Y, LIST_W, LIST_H, reader_scroll, VIRTUAL_H)
 
         local prev_p = math.max(1, current_page_idx - 1)
@@ -172,18 +185,15 @@ function draw()
                 for l, line in ipairs(page_lines) do
                     ui.text(LEFT_MARGIN, start_y + (l - 1) * LINE_H, line, FONT_SIZE, 65535)
                 end
-            else
-                -- пустая страница — на всякий случай
-                ui.text(LEFT_MARGIN, base_y + 100, "(пустая страница)", FONT_SIZE, 0x630C)
             end
         end
         ui.endList()
 
-        -- Перелистывание с доводкой (незаметно для пользователя)
+        -- === ФИКС ДОВОДКИ В ОБЕ СТОРОНЫ ===
         local shifted = true
         while shifted do
             shifted = false
-            if reader_scroll >= 2 * PAGE_H and current_page_idx < total_pages then
+            if reader_scroll > PAGE_H and current_page_idx < total_pages then
                 current_page_idx = current_page_idx + 1
                 reader_scroll = reader_scroll - PAGE_H
                 shifted = true
@@ -194,17 +204,30 @@ function draw()
             end
         end
 
-        -- Верхняя панель режима чтения — рисуется ПОСЛЕ endList, чтобы не скроллилась
+        -- Верхняя панель (после endList — не скроллится)
         ui.rect(0, 0, SCR_W, 60, 0x18C3)
         ui.text(10, 15, selected_file or "???", 2, 65535)
-        ui.text(SCR_W - 190, 15, "Стр. " .. current_page_idx .. "/" .. total_pages, 2, 65535)
+
+        -- Прогресс в %
+        local prog = 0
+        if total_lines > 0 and total_pages > 0 then
+            local start_l = page_start_lines[current_page_idx] or 1
+            local page_l = #pages[current_page_idx] or 0
+            local mid_l = start_l + page_l / 2 - 0.5
+            prog = math.floor(mid_l / total_lines * 100)
+        end
+        ui.text(SCR_W - 150, 15, prog .. "%", 2, 65535)
+
+        -- Прогресс-бар
+        ui.rect(10, 48, SCR_W - 20, 8, 0x4208) -- фон
+        ui.rect(10, 48, math.floor((SCR_W - 20) * prog / 100), 8, 2016) -- заполнение
+
         if ui.button(SCR_W - 100, 12, 90, 40, "Back", 63488) then
             mode = "selector"
             file_scroll = 0
         end
 
-        -- Если файл пустой
-        if total_pages == 1 and #pages[1] == 0 then
+        if total_lines == 0 then
             ui.text(50, 200, "Файл пустой или не текст", 2, 63488)
         end
     end
