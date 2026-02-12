@@ -12,7 +12,7 @@ local MARGIN_TOP = HEADER_H + 10
 local visibleH = H - HEADER_H
 local pageH = visibleH
 local contentH_reader = pageH * 3
-
+local sd_ok = true
 local mode = "browser"              -- "browser" or "reader"
 local currentSource = "internal"    -- "internal" or "sd"
 local fileList = {}
