@@ -1,9 +1,10 @@
--- Константы оформления
+-- Константы
 local W, H = 410, 502
 local HEADER_H = 60
-local MARGIN_X = 20
+local MARGIN_X = 15
 local LINE_HEIGHT = 32
 local TEXT_SIZE = 2
+local CHARS_LIMIT = 28 -- Максимальное кол-во СИМВОЛОВ (не байт) в строке
 
 -- Расчетные параметры
 local visibleH = H - HEADER_H
@@ -19,9 +20,53 @@ local fileName = ""
 local lines = {}
 local totalPages = 0
 local currentPage = 0
-local scrollY = pageH -- Начальная позиция (центр списка)
+local scrollY = pageH 
 
--- Загрузка списка файлов
+-- Функция для корректной работы с UTF-8 (подсчет символов и подстроки)
+local function utf8_len(s)
+    local _, count = string.gsub(s, "[^\128-\193]", "")
+    return count
+end
+
+-- Умный перенос текста по словам
+local function wrapText(text)
+    local res = {}
+    for paragraph in (text .. "\n"):gmatch("(.-)\r?\n") do
+        if paragraph == "" then 
+            table.insert(res, "") 
+        else
+            local line = ""
+            local lineLen = 0
+            for word in paragraph:gmatch("%S+") do
+                local wLen = utf8_len(word)
+                if lineLen + wLen + 1 <= CHARS_LIMIT then
+                    line = line .. (line == "" and "" or " ") .. word
+                    lineLen = lineLen + wLen + (line == "" and 0 or 1)
+                else
+                    table.insert(res, line)
+                    line = word
+                    lineLen = wLen
+                end
+            end
+            if line ~= "" then table.insert(res, line) end
+        end
+    end
+    return res
+end
+
+-- Загрузка файла
+local function loadFile(path)
+    local data = (currentSource == "sd") and sd.readBytes(path) or fs.readBytes(path)
+    if not data or #data == 0 then return false end
+    
+    lines = wrapText(data)
+    totalPages = math.ceil(#lines / linesPerPage)
+    currentPage = 0
+    scrollY = pageH
+    mode = "reader"
+    return true
+end
+
 local function refreshFiles()
     fileList = {}
     local res = (currentSource == "sd") and sd.list("/") or fs.list("/")
@@ -29,78 +74,66 @@ local function refreshFiles()
         for _, name in ipairs(res) do
             if name:lower():match("%.txt$") then table.insert(fileList, name) end
         end
-        table.sort(fileList)
     end
 end
 
--- Загрузка контента
-local function loadFile(path)
-    local data = (currentSource == "sd") and sd.readBytes(path) or fs.readBytes(path)
-    if type(data) ~= "string" then return false end
-    
-    lines = {}
-    for line in (data .. "\n"):gmatch("(.-)\r?\n") do
-        table.insert(lines, line)
-    end
-    
-    totalPages = math.max(1, math.ceil(#lines / linesPerPage))
-    currentPage = 0
-    scrollY = pageH
-    mode = "reader"
-    return true
-end
-
--- Отрисовка одной страницы
+-- Отрисовка страницы
 local function renderPage(pIdx, baseY)
     if pIdx < 0 or pIdx >= totalPages then
-        local msg = (pIdx < 0) and "--- НАЧАЛО ---" or "--- КОНЕЦ ---"
-        ui.text(W/2 - 60, baseY + visibleH/2, msg, 2, 0x421F)
+        local msg = (pIdx < 0) and "--- НАЧАЛО ФАЙЛА ---" or "--- КОНЕЦ ФАЙЛА ---"
+        ui.text(W/2 - 100, baseY + visibleH/2, msg, 2, 0x8410)
         return
     end
 
     local start = pIdx * linesPerPage + 1
     local stop = math.min(start + linesPerPage - 1, #lines)
     for i = start, stop do
-        ui.text(MARGIN_X, baseY + 10 + (i - start) * LINE_HEIGHT, lines[i], TEXT_SIZE, 0xFFFF)
+        ui.text(MARGIN_X, baseY + 15 + (i - start) * LINE_HEIGHT, lines[i], TEXT_SIZE, 0xFFFF)
     end
 end
 
--- Основной цикл ридера
+-- РИДЕР
 local function drawReader()
     ui.rect(0, 0, W, H, 0)
     
-    -- Шапка
-    ui.text(10, 15, fileName, 2, 0x07E0)
-    ui.text(W - 120, 15, (currentPage + 1) .. "/" .. totalPages, 2, 0xFFFF)
-    if ui.button(10, H - 50, 80, 40, "BACK", 0xF800) then mode = "browser" end
+    -- Инфо-панель
+    ui.text(10, 15, (currentPage + 1) .. " / " .. totalPages, 2, 0x07E0)
+    if ui.button(W - 80, 10, 70, 40, "EXIT", 0xF800) then mode = "browser" end
 
-    -- Работа со списком
-    ui.setListInertia(false) -- Выключаем системную инерцию для четкого контроля snap-логики
-    local newScroll = ui.beginList(0, HEADER_H, W, visibleH, scrollY, contentH)
-        renderPage(currentPage - 1, 0)         -- Секция 1
-        renderPage(currentPage, pageH)         -- Секция 2 (Текущая)
-        renderPage(currentPage + 1, pageH * 2) -- Секция 3
+    -- Список (3 страницы)
+    ui.setListInertia(false)
+    local updatedScroll = ui.beginList(0, HEADER_H, W, visibleH, scrollY, contentH)
+        renderPage(currentPage - 1, 0)
+        renderPage(currentPage, pageH)
+        renderPage(currentPage + 1, pageH * 2)
     ui.endList()
 
     local touch = ui.getTouch()
     
     if touch.touching then
-        scrollY = newScroll
+        -- Ограничители, чтобы не листать в пустоту на первой и последней странице
+        if currentPage == 0 and updatedScroll < pageH then
+            scrollY = pageH -- Блокируем скролл вверх на 1-й странице
+        elseif currentPage == totalPages - 1 and updatedScroll > pageH then
+            scrollY = pageH -- Блокируем скролл вниз на последней
+        else
+            scrollY = updatedScroll
+        end
     else
-        -- Логика перелистывания (порог 25% высоты экрана)
-        local diff = newScroll - pageH
-        local threshold = pageH * 0.25
+        -- Логика переключения
+        local diff = scrollY - pageH
+        local threshold = pageH * 0.3 -- 30% экрана для листания
 
         if diff < -threshold and currentPage > 0 then
             currentPage = currentPage - 1
-            scrollY = pageH -- Мгновенный прыжок (визуально незаметно)
+            scrollY = pageH -- Мгновенная подмена
         elseif diff > threshold and currentPage < totalPages - 1 then
             currentPage = currentPage + 1
-            scrollY = pageH -- Мгновенный прыжок
+            scrollY = pageH -- Мгновенная подмена
         else
-            -- Плавная доводка к центру (Lerp)
-            if math.abs(diff) > 1 then
-                scrollY = newScroll + (pageH - newScroll) * 0.2
+            -- ПЛАВНАЯ ДОВОДКА (Анимация)
+            if math.abs(diff) > 2 then
+                scrollY = scrollY - (diff * 0.15) -- Коэффициент 0.15 для плавности
             else
                 scrollY = pageH
             end
@@ -108,20 +141,20 @@ local function drawReader()
     end
 end
 
--- Файловый браузер
+-- БРАУЗЕР
 local function drawBrowser()
     ui.rect(0, 0, W, H, 0)
-    ui.text(20, 15, "BROWSER: " .. currentSource:upper(), 2, 0xFFFF)
+    ui.text(20, 15, "FILES (" .. currentSource .. ")", 2, 0xFFFF)
     
-    if ui.button(W - 100, 10, 80, 35, "SRC", 0x421F) then
+    if ui.button(W - 100, 10, 90, 35, "SOURCE", 0x421F) then
         currentSource = (currentSource == "sd") and "internal" or "sd"
         refreshFiles()
     end
 
     local bScroll = 0
-    bScroll = ui.beginList(0, 60, W, H - 60, bScroll, #fileList * 50)
+    bScroll = ui.beginList(0, 60, W, H - 60, bScroll, #fileList * 55)
     for i, f in ipairs(fileList) do
-        if ui.button(10, (i-1)*50, W-20, 45, f, 0x2104) then
+        if ui.button(10, (i-1)*55, W-20, 45, f, 0x2104) then
             fileName = f
             loadFile("/" .. f)
         end
@@ -134,5 +167,5 @@ function draw()
     ui.flush()
 end
 
--- Старт
+-- Инициализация
 refreshFiles()
