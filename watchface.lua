@@ -82,75 +82,91 @@ end
 -- === [ОТРИСОВКА] ===
 -- Рисует одну страницу текста по указанному смещению Y
 -- Оптимизированная отрисовка страницы
-local function renderPage(pIdx, baseY)
-    if pIdx < 0 or pIdx >= totalPages then
-        ui.text(W/2 - 50, baseY + visibleH/2, pIdx < 0 and "START" or "END", 2, 0x8410)
-        return
-    end
+-- Вспомогательная функция для интерполяции цвета (затемнения)
+-- t: 0.0 (черный) до 1.0 (полный цвет)
+local function getFadeColor(t, maxColor)
+    if t <= 0 then return 0x0000 end
+    if t >= 1 then return maxColor end
+    
+    -- Раскладываем 565 цвет на R, G, B
+    local r = math.floor(((maxColor >> 11) & 0x1F) * t)
+    local g = math.floor(((maxColor >> 5) & 0x3F) * t)
+    local b = math.floor((maxColor & 0x1F) * t)
+    
+    return (r << 11) | (g << 5) | b
+end
 
+local function renderPageFade(pIdx, opacity)
+    if pIdx < 0 or pIdx >= totalPages or opacity <= 0 then return end
+    
+    local textColor = getFadeColor(opacity, 0xFFFF)
+    local metaColor = getFadeColor(opacity, 0x8410) -- Для служебного текста
+    
     local start = pIdx * linesPerPage + 1
     local stop = math.min(start + linesPerPage - 1, #lines)
     
-    -- Оптимизация: не рисуем то, что за пределами физического экрана
-    -- baseY — это координата начала страницы относительно 0 экрана
     for i = start, stop do
-        local lineY = baseY + 10 + (i - start) * LINE_HEIGHT
-        if lineY > -LINE_HEIGHT and lineY < H then -- Clip check
-            ui.text(MARGIN_X, lineY, lines[i], TEXT_SIZE, 0xFFFF)
-        end
+        local y = HEADER_H + 10 + (i - start) * LINE_HEIGHT
+        ui.text(MARGIN_X, y, lines[i], TEXT_SIZE, textColor)
     end
 end
+
+-- Переменные для логики фейда
+local fadeProgress = 0 -- от -1 (предыдущая) до 1 (следующая)
 
 local function drawReader()
     ui.rect(0, 0, W, H, 0)
     
-    -- Отрисовка интерфейса (статично)
+    -- Шапка (всегда яркая)
     ui.fillRoundRect(0, 0, W, HEADER_H - 5, 0, 0x10A2)
     ui.text(10, 15, string.format("%d / %d", currentPage + 1, totalPages), 2, 0xFFFF)
     if ui.button(W - 80, 5, 70, 35, "EXIT", 0xF800) then mode = "browser" end
 
     local touch = ui.getTouch()
-    
-    -- ЛОГИКА АНИМАЦИИ (упрощенная)
+    local targetFade = 0
+
     if touch.touching then
-        -- Когда тянем, просто меняем временное смещение
-        if not lastTouchY then lastTouchY = touch.y end
-        local delta = touch.y - lastTouchY
-        scrollY = pageH + delta
-        animDir = 0
-    else
-        lastTouchY = nil
-        -- Плавный возврат или перелистывание (Lerp)
-        local targetScroll = pageH
-        local diff = scrollY - pageH
+        if not lastTouchX then lastTouchX = touch.x end
+        -- Считаем горизонтальный или вертикальный свайп (тут по Y, как ты просил)
+        local delta = touch.y - lastTouchX
+        fadeProgress = delta / (visibleH * 0.8) -- чувствительность
         
-        if math.abs(diff) > pageH * 0.25 then
-            if diff < 0 and currentPage < totalPages - 1 then 
-                targetScroll = 0 -- Листаем вперед
-            elseif diff > 0 and currentPage > 0 then 
-                targetScroll = pageH * 2 -- Листаем назад
-            end
+        -- Ограничиваем, чтобы не уходить за пределы существующих страниц
+        if currentPage == 0 and fadeProgress > 0 then fadeProgress = 0 end
+        if currentPage == totalPages - 1 and fadeProgress < 0 then fadeProgress = 0 end
+    else
+        lastTouchX = nil
+        -- Логика переключения
+        if math.abs(fadeProgress) > 0.3 then
+            targetFade = (fadeProgress > 0) and 1 or -1
+        else
+            targetFade = 0
         end
         
-        -- Плавное приближение к цели (простой Lerp эффективнее сложной анимации)
-        if math.abs(scrollY - targetScroll) > 1 then
-            scrollY = scrollY + (targetScroll - scrollY) * 0.3
+        -- Плавный довод к цели
+        if math.abs(fadeProgress - targetFade) > 0.05 then
+            fadeProgress = fadeProgress + (targetFade - fadeProgress) * 0.2
         else
-            -- Завершение анимации
-            if targetScroll == 0 then currentPage = currentPage + 1 end
-            if targetScroll == pageH * 2 then currentPage = currentPage - 1 end
-            scrollY = pageH
+            -- Завершаем переход
+            if targetFade == 1 then currentPage = currentPage - 1 end
+            if targetFade == -1 then currentPage = currentPage + 1 end
+            fadeProgress = 0
         end
     end
 
-    -- Рендерим только нужные страницы напрямую без beginList
-    -- Это сэкономит кучу ресурсов на обработке внутренних контейнеров списка
-    local drawY = scrollY - pageH
-    
-    -- Используем экранные координаты напрямую
-    renderPage(currentPage - 1, HEADER_H + drawY - pageH)
-    renderPage(currentPage,     HEADER_H + drawY)
-    renderPage(currentPage + 1, HEADER_H + drawY + pageH)
+    -- Рендеринг с эффектом
+    if fadeProgress > 0 then
+        -- Листаем назад (предыдущая страница проявляется)
+        renderPageFade(currentPage, 1 - fadeProgress)
+        renderPageFade(currentPage - 1, fadeProgress)
+    elseif fadeProgress < 0 then
+        -- Листаем вперед (следующая страница проявляется)
+        renderPageFade(currentPage, 1 + fadeProgress)
+        renderPageFade(currentPage + 1, -fadeProgress)
+    else
+        -- Просто текущая страница
+        renderPageFade(currentPage, 1.0)
+    end
 end
 local function drawBrowser()
     ui.rect(0, 0, W, H, 0)
