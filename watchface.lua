@@ -1,99 +1,87 @@
--- ────────────────────────────────────────────────
--- Читалка текстовых файлов (LuaWatch)
--- ────────────────────────────────────────────────
+-- Читалка текстовых файлов с выбором из SD / Flash
+-- 2025-2026 версия для LuaWatch
 
 -- Константы
 local SCR_W, SCR_H = 410, 502
-local TEXT_SIZE = 2  -- Размер шрифта (1 для читаемости)
-local CHAR_W = 16    -- Примерная ширина символа в unifont (16px для size=1)
-local LINE_H = 20    -- Высота строки с отступом
-local MARGIN_X = 10  -- Отступы слева/справа
-local MARGIN_Y = 40  -- Отступы сверху (для статуса) / снизу
-local LINES_PER_PAGE = math.floor((SCR_H - 2 * MARGIN_Y) / LINE_H)  -- ~23 строки
-local STATUS_H = 30  -- Высота строки статуса
-local FADE_STEPS = 10  -- Шаги анимации fade (больше — плавнее, но медленнее)
-local FADE_DELAY = 20  -- Задержка между шагами (мс)
+local TEXT_SIZE    = 2
+local CHAR_W       = 16
+local LINE_H       = 20
+local MARGIN_X     = 12
+local MARGIN_Y     = 45
+local LINES_PER_PAGE = math.floor((SCR_H - MARGIN_Y - 60) / LINE_H)  -- ~20-21 строк
+local STATUS_H     = 35
+local FADE_STEPS   = 8
+local FADE_DELAY   = 25   -- мс
 
 -- Цвета
-local COLOR_BG = 0       -- Черный
-local COLOR_TEXT = 0xFFFF -- Белый
-local COLOR_GRAY = 0x8410 -- Серый (для fade)
-local COLOR_ACCENT = 0x07E0 -- Зеленый для прогресса
-local COLOR_WARN = 0xF800  -- Красный для ошибок
+local BG       = 0x0000
+local TEXT     = 0xFFFF
+local GRAY     = 0x8410
+local ACCENT   = 0x07E0   -- зелёный
+local WARN     = 0xF800
+local SELECTED = 0xFFE0   -- жёлто-зелёный для выделения
+local TAB_ACTIVE   = 0x07E0
+local TAB_INACTIVE = 0x4208
 
--- Глобальные переменные
-local file_path = "/book.txt"  -- Путь к файлу (замените на ваш)
-local full_text = ""           -- Полный текст файла
-local pages = {}               -- Массив страниц (каждая — таблица строк)
-local current_page = 1         -- Текущая страница
-local total_pages = 1          -- Всего страниц
-local touch_start_x, touch_start_y = -1, -1  -- Для свайпа
-local is_swiping = false       -- Флаг свайпа
-local error_msg = ""           -- Сообщение об ошибке
+-- Состояние
+local mode = "browser"          -- "browser" или "reader"
+local current_tab = "SD"        -- "SD" или "Flash"
+local current_dir_sd    = "/sdcard/books"
+local current_dir_flash = "/books"
+local files_sd    = {}
+local files_flash = {}
+local selected_file = nil
+local full_text = ""
+local pages = {}
+local current_page = 1
+local total_pages = 0
+local error_msg = ""
+local touch_start_x, touch_start_y = -1, -1
+local is_swiping = false
 
 -- ────────────────────────────────────────────────
 -- Вспомогательные функции
 -- ────────────────────────────────────────────────
 
--- Темнее цвета (RGB565)
-function darken_color(color, factor)
-    local r = bit.band(bit.rshift(color, 11), 0x1F)
-    local g = bit.band(bit.rshift(color, 5), 0x3F)
-    local b = bit.band(color, 0x1F)
-    r = math.floor(r * factor / 255)
-    g = math.floor(g * factor / 255)
-    b = math.floor(b * factor / 255)
-    return bit.bor(bit.lshift(r, 11), bit.lshift(g, 5), b)
+function darken(c, f)
+    local r = bit.band(bit.rshift(c,11),31)
+    local g = bit.band(bit.rshift(c,5), 63)
+    local b = bit.band(c,31)
+    return bit.bor(bit.lshift(math.floor(r*f/255),11),
+                   bit.lshift(math.floor(g*f/255),5),
+                   math.floor(b*f/255))
 end
 
--- Разбивка текста на строки с переносом по словам
-function wrap_text(text)
-    local lines = {}
-    local current_line = ""
+function wrap_line(line)
     local words = {}
-    for word in string.gmatch(text, "[^%s]+") do table.insert(words, word) end
-    for i, word in ipairs(words) do
-        local test_line = current_line .. (current_line == "" and "" or " ") .. word
-        local approx_width = string.len(test_line) * CHAR_W
-        if approx_width <= (SCR_W - 2 * MARGIN_X) then
-            current_line = test_line
+    for w in string.gmatch(line, "%S+") do table.insert(words, w) end
+    
+    local lines = {}
+    local cur = ""
+    for _, w in ipairs(words) do
+        local test = cur .. (cur == "" and "" or " ") .. w
+        if #test * CHAR_W <= SCR_W - 2*MARGIN_X then
+            cur = test
         else
-            if current_line ~= "" then table.insert(lines, current_line) end
-            current_line = word
+            if cur ~= "" then table.insert(lines, cur) end
+            cur = w
         end
     end
-    if current_line ~= "" then table.insert(lines, current_line) end
+    if cur ~= "" then table.insert(lines, cur) end
     return lines
 end
 
--- Разбивка текста на страницы
-function paginate_text()
+function paginate()
     pages = {}
-    local res = fs.readBytes(file_path)
-    if not res.ok then
-        error_msg = res.err or "File not found"
-        return
-    end
-    full_text = res[1]  -- lua_pushlstring возвращает как 1 аргумент
-
-    -- Удаляем \r для совместимости с CRLF
-    full_text = string.gsub(full_text, "\r", "")
-
-    -- Разбиваем на строки по \n сначала (параграфы)
-    local raw_lines = {}
-    for line in string.gmatch(full_text, "([^\n]*)\n?") do
-        table.insert(raw_lines, line)
-    end
-
-    -- Теперь wrap каждую raw_line и собираем все wrapped lines
     local all_lines = {}
-    for _, raw in ipairs(raw_lines) do
-        local wrapped = wrap_text(raw)
-        for _, w in ipairs(wrapped) do table.insert(all_lines, w) end
-        table.insert(all_lines, "")  -- Пустая строка для параграфа
+    
+    -- Разбиваем на параграфы и оборачиваем
+    for para in string.gmatch(full_text, "([^\n]*)\n?") do
+        local wrapped = wrap_line(para)
+        for _, ln in ipairs(wrapped) do table.insert(all_lines, ln) end
+        table.insert(all_lines, "")   -- пустая строка между параграфами
     end
-
-    -- Собираем страницы
+    
     local page = {}
     for _, line in ipairs(all_lines) do
         table.insert(page, line)
@@ -103,95 +91,177 @@ function paginate_text()
         end
     end
     if #page > 0 then table.insert(pages, page) end
+    
     total_pages = #pages
 end
 
--- Отрисовка страницы с опциональным fade_factor (0-255, 255=полный)
-function draw_page(page_num, fade_factor)
-    if fade_factor == nil then fade_factor = 255 end
-    local text_color = darken_color(COLOR_TEXT, fade_factor)
-
-    ui.rect(0, 0, SCR_W, SCR_H, COLOR_BG)  -- Очистка
-
-    -- Статус сверху
-    local time = hw.getTime()
-    local batt = hw.getBatt()
-    local progress = math.floor((current_page / total_pages) * 100)
-    local status_text = string.format("%02d:%02d  Batt: %d%%  Page %d/%d (%d%%)", time.h, time.m, batt, page_num, total_pages, progress)
-    ui.text(MARGIN_X, 5, status_text, 1, COLOR_GRAY)
-
-    -- Прогресс-бар
-    local prog_w = math.floor((SCR_W - 2 * MARGIN_X) * (current_page / total_pages))
-    ui.rect(MARGIN_X, STATUS_H - 5, SCR_W - 2 * MARGIN_X, 3, 0x4208)  -- Фон
-    ui.rect(MARGIN_X, STATUS_H - 5, prog_w, 3, COLOR_ACCENT)         -- Прогресс
-
-    -- Текст
-    local page = pages[page_num]
-    if page then
-        for i, line in ipairs(page) do
-            ui.text(MARGIN_X, MARGIN_Y + (i-1) * LINE_H, line, TEXT_SIZE, text_color)
+-- ────────────────────────────────────────────────
+-- Загрузка списков файлов
+-- ────────────────────────────────────────────────
+function load_files(tab)
+    local dir = (tab == "SD") and current_dir_sd or current_dir_flash
+    local fs = (tab == "SD") and sd or fs
+    
+    local res = fs.list(dir)
+    local list = (tab == "SD") and files_sd or files_flash
+    
+    list = {}
+    
+    if not res.ok then
+        error_msg = "Не открыта папка: " .. dir
+        return
+    end
+    
+    for _, name in ipairs(res) do
+        if name:match("%.txt$") or name:match("%.TXT$") then
+            table.insert(list, {name = name, path = dir .. "/" .. name})
         end
     end
-
-    -- Кнопки Prev/Next (внизу)
-    if ui.button(20, SCR_H - 50, 180, 40, "Prev", COLOR_ACCENT) then prev_page() end
-    if ui.button(SCR_W - 200, SCR_H - 50, 180, 40, "Next", COLOR_ACCENT) then next_page() end
+    
+    if tab == "SD" then files_sd = list else files_flash = list end
 end
 
--- Анимация переключения страницы
-function animate_page_flip(new_page)
-    -- Fade out текущей
+-- ────────────────────────────────────────────────
+-- Отрисовка вкладок и списка файлов
+-- ────────────────────────────────────────────────
+function draw_browser()
+    ui.rect(0, 0, SCR_W, SCR_H, BG)
+    
+    -- Вкладки
+    local tab_w = SCR_W / 2
+    ui.fillRoundRect(0, 0, tab_w, 38, 8, current_tab=="SD" and TAB_ACTIVE or TAB_INACTIVE)
+    ui.fillRoundRect(tab_w, 0, tab_w, 38, 8, current_tab=="Flash" and TAB_ACTIVE or TAB_INACTIVE)
+    
+    ui.text(tab_w/2 - 30, 12, "SD-карта", 2, current_tab=="SD" and 0 or GRAY)
+    ui.text(tab_w + tab_w/2 - 40, 12, "Flash", 2, current_tab=="Flash" and 0 or GRAY)
+    
+    -- Текущая папка
+    local cur_dir = (current_tab == "SD") and current_dir_sd or current_dir_flash
+    ui.text(MARGIN_X, 45, cur_dir, 1, GRAY)
+    
+    -- Список файлов
+    local files = (current_tab == "SD") and files_sd or files_flash
+    local start_y = 80
+    local item_h = 42
+    
+    for i, f in ipairs(files) do
+        local y = start_y + (i-1)*item_h
+        if y + item_h > SCR_H - 60 then break end
+        
+        local selected = (selected_file == f.path)
+        local col = selected and SELECTED or TEXT
+        
+        if ui.button(MARGIN_X, y, SCR_W - 2*MARGIN_X, item_h-6, f.name, col) then
+            selected_file = f.path
+            mode = "reader"
+            
+            local content = (current_tab == "SD") and sd.readBytes(f.path) or fs.readBytes(f.path)
+            if content and #content > 0 then
+                full_text = content
+                full_text = string.gsub(full_text, "\r\n", "\n")
+                paginate()
+                current_page = 1
+                error_msg = (total_pages == 0) and "Файл пустой" or ""
+            else
+                error_msg = "Не удалось прочитать файл"
+            end
+        end
+    end
+    
+    -- Кнопки управления
+    if ui.button(20, SCR_H-55, 120, 40, "Обновить", ACCENT) then
+        load_files(current_tab)
+    end
+    
+    if ui.button(SCR_W-140, SCR_H-55, 120, 40, "Назад", WARN) then
+        -- можно добавить выход в меню или просто ничего не делать
+    end
+end
+
+-- ────────────────────────────────────────────────
+-- Отрисовка страницы книги
+-- ────────────────────────────────────────────────
+function draw_page(fade)
+    fade = fade or 255
+    local col = darken(TEXT, fade)
+    
+    ui.rect(0, 0, SCR_W, SCR_H, BG)
+    
+    -- статус
+    local t = hw.getTime()
+    local b = hw.getBatt()
+    local prog = total_pages > 0 and math.floor(current_page / total_pages * 100) or 0
+    local status = string.format("%02d:%02d  %d%%  %d / %d  (%d%%)", 
+                                 t.h, t.m, b, current_page, total_pages, prog)
+    ui.text(MARGIN_X, 8, status, 1, GRAY)
+    
+    -- прогресс-бар
+    local pw = math.floor((SCR_W - 2*MARGIN_X) * (current_page / total_pages))
+    ui.rect(MARGIN_X, 32, SCR_W-2*MARGIN_X, 4, 0x4208)
+    ui.rect(MARGIN_X, 32, pw, 4, ACCENT)
+    
+    -- текст
+    local page = pages[current_page] or {}
+    for i, line in ipairs(page) do
+        ui.text(MARGIN_X, MARGIN_Y + (i-1)*LINE_H, line, TEXT_SIZE, col)
+    end
+    
+    -- кнопки
+    if ui.button(20, SCR_H-55, 170, 40, "Предыдущая", ACCENT) then
+        if current_page > 1 then current_page = current_page - 1 end
+    end
+    if ui.button(SCR_W-190, SCR_H-55, 170, 40, "Следующая", ACCENT) then
+        if current_page < total_pages then current_page = current_page + 1 end
+    end
+end
+
+-- ────────────────────────────────────────────────
+-- Плавное перелистывание
+-- ────────────────────────────────────────────────
+function flip_page(new_page)
+    if new_page < 1 or new_page > total_pages then return end
+    
+    -- fade out
     for i = FADE_STEPS, 1, -1 do
-        local factor = math.floor(255 * (i / FADE_STEPS))
-        draw_page(current_page, factor)
+        local f = math.floor(255 * i / FADE_STEPS)
+        draw_page(f)
         ui.flush()
-        hw.millis()  -- Просто вызов для yield, но лучше os.execute("delay " .. FADE_DELAY) если есть, иначе loop
-        -- Поскольку нет delay в bindings, используем hw.millis() в цикле
-        local start = hw.millis()
-        while hw.millis() - start < FADE_DELAY do end
+        local st = hw.millis()
+        while hw.millis() - st < FADE_DELAY do end
     end
-
-    -- Меняем страницу
+    
     current_page = new_page
-
-    -- Fade in новой
+    
+    -- fade in
     for i = 1, FADE_STEPS do
-        local factor = math.floor(255 * (i / FADE_STEPS))
-        draw_page(current_page, factor)
+        local f = math.floor(255 * i / FADE_STEPS)
+        draw_page(f)
         ui.flush()
-        local start = hw.millis()
-        while hw.millis() - start < FADE_DELAY do end
+        local st = hw.millis()
+        while hw.millis() - st < FADE_DELAY do end
     end
 end
 
--- Переход к следующей/предыдущей
-function next_page()
-    if current_page < total_pages then
-        animate_page_flip(current_page + 1)
-    end
-end
-
-function prev_page()
-    if current_page > 1 then
-        animate_page_flip(current_page - 1)
-    end
-end
-
--- Обработка свайпа (left/right для страниц)
+-- ────────────────────────────────────────────────
+-- Обработка свайпа
+-- ────────────────────────────────────────────────
 function handle_swipe()
-    local touch = ui.getTouch()
-    if touch.touching then
+    local t = ui.getTouch()
+    if t.touching then
         if not is_swiping then
-            touch_start_x = touch.x
-            touch_start_y = touch.y
+            touch_start_x = t.x
+            touch_start_y = t.y
             is_swiping = true
         end
     else
         if is_swiping then
-            local dx = touch.x - touch_start_x
-            local dy = touch.y - touch_start_y
-            if math.abs(dx) > 100 and math.abs(dy) < 50 then  -- Горизонтальный свайп
-                if dx < 0 then next_page() else prev_page() end
+            local dx = t.x - touch_start_x
+            if math.abs(dx) > 90 and math.abs(t.y - touch_start_y) < 60 then
+                if dx < 0 then
+                    if current_page < total_pages then flip_page(current_page + 1) end
+                else
+                    if current_page > 1 then flip_page(current_page - 1) end
+                end
             end
             is_swiping = false
         end
@@ -199,21 +269,47 @@ function handle_swipe()
 end
 
 -- ────────────────────────────────────────────────
--- Основной цикл draw()
+-- Главный draw
 -- ────────────────────────────────────────────────
 function draw()
-    if error_msg ~= "" then
-        ui.rect(0, 0, SCR_W, SCR_H, COLOR_BG)
-        ui.text(20, SCR_H/2 - 20, "Error: " .. error_msg, 2, COLOR_WARN)
-        ui.flush()
-        return
+    if mode == "browser" then
+        draw_browser()
+    else
+        if error_msg ~= "" then
+            ui.rect(0, 0, SCR_W, SCR_H, BG)
+            ui.text(40, SCR_H/2 - 30, error_msg, 2, WARN)
+        else
+            handle_swipe()
+            draw_page()
+        end
     end
-
-    handle_swipe()
-    draw_page(current_page)
+    
+    -- Переключение вкладок по нажатию (верхняя полоса)
+    local touch = ui.getTouch()
+    if touch.pressed then
+        if touch.y < 38 then
+            if touch.x < SCR_W/2 then
+                current_tab = "SD"
+            else
+                current_tab = "Flash"
+            end
+            load_files(current_tab)
+        end
+    end
+    
     ui.flush()
 end
 
+-- ────────────────────────────────────────────────
 -- Инициализация
-paginate_text()
-if total_pages == 0 then error_msg = "Empty file" end
+-- ────────────────────────────────────────────────
+if sd_ok then
+    load_files("SD")
+else
+    current_tab = "Flash"
+end
+load_files("Flash")
+
+if #files_sd == 0 and #files_flash == 0 then
+    error_msg = "Нет .txt файлов"
+end
